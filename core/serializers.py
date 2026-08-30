@@ -22,9 +22,11 @@ def account_to_dict(a: Account) -> dict:
     return {
         "account_id": a.account_id,
         "platform": a.platform,
+        "platform_instance_id": a.platform_instance_id,
         "platform_user_id": a.platform_user_id,
         "username": a.username,
         "person_id": a.person_id,
+        "suppress_auto_stub": a.suppress_auto_stub,
         "first_seen": a.first_seen,
         "last_seen": a.last_seen,
     }

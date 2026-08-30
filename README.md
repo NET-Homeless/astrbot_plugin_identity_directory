@@ -6,17 +6,18 @@
 
 - **现代化 WebUI**：基于 **Vite+ (`vp`) + Svelte 5 + shadcn-svelte (Nova)** 构建，原生响应式状态与精致组件，无缝适配 AstrBot 亮暗主题。
 - **被动全量观察**：通过 AstrBot 自定义过滤器在**不唤醒消息管线**的前提下登记每一位发言者（与 livingmemory 插件同款机制）。
-- **稳定身份锚点**：以 `(platform, platform_user_id)` 为唯一身份依据——QQ 号、RC `_id` 这类不可变 ID；群名片/昵称只作显示名历史，绝不作为身份 key。
-- **SQLite 持久化**：WAL 模式，存储于 `data/plugin_data/astrbot_plugin_identity_directory/directory.db`，插件升级不丢数据。
-- **改名追踪**：自动记录账号用过的显示名（区分平台级昵称与各群名片），供消息提及消歧与"改名前的人是谁"查询。
-- **独立 Python API**：其他插件（如记忆插件）可调用 `directory_service` 把 `event` 解析为稳定 `person_id`。
+- **稳定账号锚点**：以 `(platform, platform_instance_id, platform_user_id)` 为唯一账号依据。相同平台的多个 bot/工作区不会互相串号；群名片和昵称只作显示历史。
+- **SQLite 持久化与迁移**：WAL 模式，存储于 `data/plugin_data/astrbot_plugin_identity_directory/directory.db`；schema 自动迁移，升级不丢现有关系。
+- **改名追踪**：自动记录账号用过的显示名（区分平台级昵称与各群名片），供消息提及消歧与“改名前的人是谁”查询。
+- **Person 记忆作用域**：可直接对接 Hindsight，以稳定 `person_id` 召回/写入记忆；联系人合并后的旧 ID 仍可召回，群聊默认按平台实例和群隔离。
+- **独立 Python API**：其他插件可调用 `directory_service`，把 `event` 解析为稳定 `person_id`。
 
 ## 数据模型
 
 | 实体 | 说明 | 身份依据 |
 |---|---|---|
 | **Person** 联系人 | 现实中的人，全局唯一，有规范名/备注/标签 | — |
-| **Account** 平台账号 | 某平台一个账号，如 `aiocqhttp:100000001` | `(platform, platform_user_id)`，不可变 |
+| **Account** 平台账号 | 某个平台实例中的一个账号 | `(platform, platform_instance_id, platform_user_id)`，不可变 |
 | **Membership** 群成员 | 账号在某群里的成员关系 | `(account, group_id)`；群名片挂这里，**不同群可有不同名片** |
 | **Alias** 显示名历史 | 账号用过的名字，带平台/群作用域与时间 | 仅用于消歧，不作身份 |
 
@@ -45,6 +46,14 @@ vp build
 | `auto_track_display_names` | 开 | 显示名变化时记入别名历史 |
 | `auto_stub_person` | 开 | 新账号首次发言自动建独立联系人（之后手动合并） |
 | `capture_bots` | 关 | 是否登记 bot 账号 |
+| `inject_identity_context` | 开 | 向当前 LLM 请求注入已解析的规范名、别名和备注 |
+| `hindsight_enabled` | 关 | 启用本插件拥有的 Person 记忆链路；不会修改另一个 Hindsight 插件 |
+| `hindsight_recall_enabled` | 开 | 从 Hindsight 召回当前 Person 可见的记忆 |
+| `hindsight_retain_enabled` | 开 | 以结构化对话和幂等文档 ID 写入当前 Person 作用域 |
+| `hindsight_cross_group_memory` | 关 | 开启后同一 Person 可跨私聊/群/平台召回；可能造成跨群信息流动 |
+| `hindsight_api_base` | `http://host.docker.internal:8899` | Hindsight API 地址 |
+| `hindsight_bank_id` | `group-mei` | Hindsight Bank ID |
+| `hindsight_timeout_seconds` | `30` | 召回/写入超时；失败只跳过增强，不阻断消息 |
 
 ## 指令
 
@@ -56,7 +65,12 @@ vp build
 plugin = context.get_registered_star("astrbot_plugin_identity_directory")
 if plugin and plugin.star_cls:
     service = plugin.star_cls.directory_service
-    resolution = await service.resolve_sender("aiocqhttp", "100000001", group_id="100001")
+    resolution = await service.resolve_sender(
+        "aiocqhttp",
+        "100000001",
+        group_id="100001",
+        platform_instance_id="bot-account-1",
+    )
     if resolution and resolution.person:
         name = resolution.person.canonical_name   # 规范名，跨平台稳定
         pid  = resolution.person.person_id         # 稳定身份 ID，用于记忆 tag
@@ -67,6 +81,14 @@ if plugin and plugin.star_cls:
 ```python
 candidates = await service.find_by_name("测试用户", platform="aiocqhttp", group_id="100001")
 ```
+
+## Hindsight 作用域
+
+- 私聊默认使用 `Person` 作用域：手动绑定到同一联系人的 QQ、Rocket.Chat、Telegram 等账号共享记忆。
+- 群聊默认使用 `Person + platform instance + group` 作用域：能认出是同一个人，但不会把一个群里的记忆带到另一个群。
+- 明确开启 `hindsight_cross_group_memory` 后，群聊也改用 `Person` 作用域，从而实现跨群记忆；这是隐私边界变更，因此不默认开启。
+- 新写入只使用合并后的规范 Person ID；召回同时查询规范 ID 和全部合并来源 ID，合并前的 Person 记忆不会失联。
+- 记忆文本按不可信数据注入并进行转义；明显凭据、命令和过短消息不写入。每轮使用稳定 `document_id` 与 `operation_id`，重试不会重复创建文档。
 
 ## 许可
 

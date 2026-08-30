@@ -10,7 +10,6 @@
     User,
     Save,
     Trash2,
-    GitMerge,
     Unlink,
     Plus,
     X,
@@ -19,6 +18,16 @@
     Loader2,
     Tags,
   } from "lucide-svelte";
+  import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+  } from "$lib/components/ui/alert-dialog";
 
   let formName = $state("");
   let formTags = $state("");
@@ -46,9 +55,7 @@
   });
 
   function closeDrawer() {
-    directoryState.isDetailOpen = false;
-    directoryState.activePersonId = null;
-    directoryState.activePersonView = null;
+    directoryState.closePersonDetail();
   }
 
   function handleSave() {
@@ -69,13 +76,12 @@
 
   function handleDelete() {
     if (!directoryState.activePersonId || !directoryState.activePersonView) return;
-    if (
-      window.confirm(
-        `确定删除联系人【${directoryState.activePersonView.canonical_name}】？其关联账号将变为未绑定状态。`
-      )
-    ) {
-      directoryState.deletePerson(directoryState.activePersonId);
-    }
+    directoryState.isDeleteOpen = true;
+  }
+
+  function confirmDelete() {
+    if (!directoryState.activePersonId) return;
+    directoryState.deletePerson(directoryState.activePersonId);
   }
 
   function handleAddAlias() {
@@ -143,7 +149,7 @@
             <label for="f-canonical" class="text-xs font-semibold text-foreground">
               规范名（全局唯一主昵称）
             </label>
-            <Input id="f-canonical" bind:value={formName} placeholder="如：starshine、联系人乙" class="h-9 font-medium" />
+            <Input id="f-canonical" bind:value={formName} placeholder="如：联系人甲、联系人乙" class="h-9 font-medium" />
           </div>
 
           <div class="grid gap-1.5">
@@ -215,6 +221,12 @@
                         <code class="font-mono text-xs font-bold text-foreground">
                           {account.platform_user_id}
                         </code>
+                        <span
+                          class="rounded bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground border"
+                          title={`平台实例：${account.platform_instance_id}`}
+                        >
+                          实例 {account.platform_instance_id}
+                        </span>
                         {#if account.username}
                           <span class="text-xs text-muted-foreground">(@{account.username})</span>
                         {/if}
@@ -302,7 +314,7 @@
               >
                 {#each directoryState.activePersonView.accounts as account}
                   <option value={account.account_id}>
-                    {account.platform}:{account.platform_user_id}
+                    [{account.platform_instance_id}] {account.platform}:{account.platform_user_id}
                   </option>
                 {/each}
               </select>
@@ -324,28 +336,15 @@
           variant="destructive"
           size="sm"
           onclick={handleDelete}
+          disabled={directoryState.isDeleting}
           class="h-9 gap-1.5 text-xs"
         >
           <Trash2 class="h-4 w-4" />
           <span>删除联系人</span>
         </Button>
-
-        <Button
-          variant="outline"
-          size="sm"
-          onclick={() => {
-            if (directoryState.activePersonView) {
-              directoryState.openMerge(directoryState.activePersonView);
-            }
-          }}
-          class="h-9 gap-1.5 text-xs"
-        >
-          <GitMerge class="h-4 w-4 text-purple-500" />
-          <span>合并联系人…</span>
-        </Button>
       </div>
 
-      <Button size="sm" onclick={handleSave} disabled={directoryState.isSaving} class="h-9 gap-1.5 text-xs">
+      <Button size="sm" onclick={handleSave} disabled={directoryState.isSaving || directoryState.isDeleting} class="h-9 gap-1.5 text-xs">
         {#if directoryState.isSaving}
           <Loader2 class="h-4 w-4 animate-spin" />
           <span>正在保存…</span>
@@ -355,5 +354,27 @@
         {/if}
       </Button>
     </div>
+
+    <AlertDialog
+      open={directoryState.isDeleteOpen}
+      onOpenChange={(open) => {
+        if (!directoryState.isDeleting) directoryState.isDeleteOpen = open;
+      }}
+    >
+      <AlertDialogContent size="sm">
+        <AlertDialogHeader>
+          <AlertDialogTitle>确定删除联系人？</AlertDialogTitle>
+          <AlertDialogDescription>
+            联系人【{directoryState.activePersonView?.canonical_name || "—"}】及其身份关系将被删除，关联账号会变为未绑定状态。此操作不可撤销。
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={directoryState.isDeleting}>取消</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" disabled={directoryState.isDeleting} onclick={confirmDelete}>
+            {directoryState.isDeleting ? "正在删除…" : "确认删除"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   </aside>
 {/if}

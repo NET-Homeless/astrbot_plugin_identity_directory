@@ -8,5 +8,12 @@ repo: https://github.com/starshine/astrbot_plugin_identity_directory
 astrbot_version: ">=4.16,<5"
 support_platforms:
   - aiocqhttp
+  - qq_official
+  - qq_official_webhook
   - telegram
   - discord
+  - rocket_chat
+  - wechat
+  - wecom
+  - wecom_ai_bot
+  - weixin_official_account

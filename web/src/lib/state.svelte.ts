@@ -1,5 +1,6 @@
 import { apiGet, apiPost } from "$lib/bridge";
 import type {
+  AccountListResponse,
   AccountView,
   Alias,
   DirectoryStats,
@@ -48,9 +49,13 @@ class DirectoryState {
 
   // Accounts View State
   accounts = $state<AccountView[]>([]);
+  accountTotal = $state<number>(0);
   accountQuery = $state<string>("");
   accountPlatform = $state<string>("");
+  accountInstance = $state<string>("");
   accountUnlinked = $state<boolean>(false);
+  accountPage = $state<number>(1);
+  accountPageSize = $state<number>(50);
 
   // Person Details Modal/Drawer State
   activePersonId = $state<string | null>(null);
@@ -58,6 +63,8 @@ class DirectoryState {
   activePersonAliases = $state<Alias[]>([]);
   isDetailOpen = $state<boolean>(false);
   isDetailLoading = $state<boolean>(false);
+  isDeleteOpen = $state<boolean>(false);
+  isDeleting = $state<boolean>(false);
 
   // Merge Dialog State: Merging MULTIPLE selected source persons INTO the target person
   isMergeOpen = $state<boolean>(false);
@@ -114,13 +121,17 @@ class DirectoryState {
   async loadAccounts() {
     this.isLoading = true;
     try {
-      const res = await apiGet<{ items: AccountView[] }>("accounts", {
+      const offset = (this.accountPage - 1) * this.accountPageSize;
+      const res = await apiGet<AccountListResponse>("accounts", {
         q: this.accountQuery,
         platform: this.accountPlatform,
+        platform_instance_id: this.accountInstance,
         unlinked: this.accountUnlinked ? "1" : "0",
-        limit: 150,
+        limit: this.accountPageSize,
+        offset,
       });
       this.accounts = res.items;
+      this.accountTotal = res.total;
     } catch (e: unknown) {
       this.showToast(extractErrorMessage(e, "加载账号列表失败"), "error");
     } finally {
@@ -143,10 +154,18 @@ class DirectoryState {
       this.activePersonAliases = aliasResults.flatMap((r) => r.items);
     } catch (e: unknown) {
       this.showToast(extractErrorMessage(e, "获取联系人详情失败"), "error");
-      this.isDetailOpen = false;
+      this.closePersonDetail();
     } finally {
       this.isDetailLoading = false;
     }
+  }
+
+  closePersonDetail() {
+    this.isDetailOpen = false;
+    this.isDeleteOpen = false;
+    this.activePersonId = null;
+    this.activePersonView = null;
+    this.activePersonAliases = [];
   }
 
   async savePerson(personId: string, data: Partial<Person>) {
@@ -154,7 +173,7 @@ class DirectoryState {
     try {
       await apiPost(`persons/${personId}/update`, data as Record<string, unknown>);
       this.showToast("已成功保存修改", "success");
-      await this.openPersonDetail(personId);
+      this.closePersonDetail();
       await this.loadPersons();
       await this.loadStats();
     } catch (e: unknown) {
@@ -165,16 +184,18 @@ class DirectoryState {
   }
 
   async deletePerson(personId: string) {
+    this.isDeleting = true;
     try {
       await apiPost(`persons/${personId}/delete`, {});
       this.showToast("联系人已彻底删除", "success");
-      this.isDetailOpen = false;
-      this.activePersonView = null;
+      this.closePersonDetail();
       await this.loadPersons();
       await this.loadAccounts();
       await this.loadStats();
     } catch (e: unknown) {
       this.showToast(extractErrorMessage(e, "删除失败"), "error");
+    } finally {
+      this.isDeleting = false;
     }
   }
 

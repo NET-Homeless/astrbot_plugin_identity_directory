@@ -174,10 +174,11 @@ class CoreServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         assert count == 2
 
-        # Verify s1 and s2 deleted
-        assert await svc.get_person_view(r_s1.person.person_id) is None
-        assert await svc.get_person_view(r_s2.person.person_id) is None
-
+        # The source ID remains resolvable through a permanent redirect.
+        redirected = await svc.get_person_view(r_s1.person.person_id)
+        assert redirected is not None
+        assert redirected.person.person_id == r_target.person.person_id
+        assert await svc.get_person_view(r_s2.person.person_id) is not None
         # Verify all accounts now belong to target
         view = await svc.get_person_view(r_target.person.person_id)
         assert view is not None

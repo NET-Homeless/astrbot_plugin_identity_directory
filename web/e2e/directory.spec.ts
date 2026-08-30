@@ -1,5 +1,8 @@
 import { test, expect } from "@playwright/test";
 
+const LONG_PERSON_NAME =
+  "咕咕嘎嘎宇宙冷漠哈基米曼波椰果奶龙豪情在天自在极意豪一生有爱何惧风飞沙飞八分钱干飞马叮咚鸡叮咚鸡大狗大狗叫叫叫";
+
 // Mock AstrBot bridge script injected before app loads
 const MOCK_BRIDGE_INIT_SCRIPT = `
 window.AstrBotPluginPage = {
@@ -15,11 +18,11 @@ window.AstrBotPluginPage = {
   onContext: (cb) => { window.__onContextCb = cb; return () => {}; },
   apiGet: async (endpoint, params) => {
     if (endpoint === "stats") {
-      return { persons: 3, accounts: 3, unlinked_accounts: 1, memberships: 2, aliases: 4 };
+      return { persons: 4, accounts: 3, unlinked_accounts: 1, memberships: 2, aliases: 4 };
     }
     if (endpoint === "persons") {
       return {
-        total: 3,
+        total: 4,
         items: [
           {
             person_id: "p1",
@@ -50,6 +53,16 @@ window.AstrBotPluginPage = {
             is_archived: false,
             created_at: 1700000000,
             updated_at: 1700003000
+          },
+          {
+            person_id: "p4",
+            canonical_name: "${LONG_PERSON_NAME}",
+            notes: "用于验证超长联系人名称不会撑破合并弹窗",
+            tags: [],
+            is_bot: false,
+            is_archived: false,
+            created_at: 1700000000,
+            updated_at: 1700004000
           }
         ]
       };
@@ -68,6 +81,7 @@ window.AstrBotPluginPage = {
           {
             account_id: "a1",
             platform: "aiocqhttp",
+            platform_instance_id: "萌依",
             platform_user_id: "100000001",
             username: "",
             person_id: "p1",
@@ -110,6 +124,7 @@ window.AstrBotPluginPage = {
           {
             account_id: "a1",
             platform: "aiocqhttp",
+            platform_instance_id: "萌依",
             platform_user_id: "100000001",
             username: "",
             person_id: "p1",
@@ -194,11 +209,68 @@ test.describe("Identity Directory E2E", () => {
     await expect(page.locator("#f-canonical")).toHaveValue("测试用户A");
     await expect(page.locator("#f-tags")).toHaveValue("管理员");
     await expect(page.locator("#f-notes")).toHaveValue("主要开发者");
+    await expect(drawer.getByText("实例 萌依", { exact: true })).toBeVisible();
 
-    // Close drawer via close button
+    // Close drawer via close button; the merge action belongs to the list entry only.
+    await expect(drawer.getByRole("button", { name: /合并联系人/ })).toHaveCount(0);
     const closeBtn = drawer.getByRole("button").first();
     await closeBtn.click();
     await expect(drawer).not.toBeVisible();
+  });
+
+  test("4. Saving a person closes the drawer after the update succeeds", async ({ page }) => {
+    await page
+      .getByRole("row", { name: /测试用户A/ })
+      .getByRole("button", { name: "编辑" })
+      .click();
+
+    const drawer = page.locator("aside[aria-label='联系人管理抽屉']");
+    await expect(drawer).toBeVisible();
+    await page.locator("#f-canonical").fill("修改后的用户");
+    await drawer.getByRole("button", { name: "保存修改" }).click();
+
+    await expect(drawer).not.toBeVisible();
+    const postPayload = await page.evaluate(
+      () =>
+        (window as unknown as { __lastApiPost: { endpoint: string; body: unknown } }).__lastApiPost,
+    );
+    expect(postPayload).toEqual({
+      endpoint: "persons/p1/update",
+      body: {
+        canonical_name: "修改后的用户",
+        tags: ["管理员"],
+        notes: "主要开发者",
+        is_bot: false,
+        is_archived: false,
+      },
+    });
+  });
+
+  test("5. Delete uses an in-page confirmation and closes after success", async ({ page }) => {
+    await page
+      .getByRole("row", { name: /测试用户A/ })
+      .getByRole("button", { name: "编辑" })
+      .click();
+
+    const drawer = page.locator("aside[aria-label='联系人管理抽屉']");
+    await drawer.getByRole("button", { name: "删除联系人" }).click();
+    const alertDialog = page.getByRole("alertdialog");
+    await expect(alertDialog).toBeVisible();
+    await expect(alertDialog).toContainText("确定删除联系人？");
+
+    await alertDialog.getByRole("button", { name: "取消" }).click();
+    await expect(alertDialog).not.toBeVisible();
+    await expect(drawer).toBeVisible();
+
+    await drawer.getByRole("button", { name: "删除联系人" }).click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "确认删除" }).click();
+    await expect(drawer).not.toBeVisible();
+
+    const postPayload = await page.evaluate(
+      () =>
+        (window as unknown as { __lastApiPost: { endpoint: string; body: unknown } }).__lastApiPost,
+    );
+    expect(postPayload).toEqual({ endpoint: "persons/p1/delete", body: {} });
   });
 
   test("4. Multi-select merge INTO current person from LIST TABLE with checkboxes", async ({
@@ -251,6 +323,81 @@ test.describe("Identity Directory E2E", () => {
     expect(postPayload).toEqual({
       target_person_id: "p1",
       source_person_ids: ["p2", "p3"],
+    });
+  });
+
+  test("7. Merge footer remains reachable with a long name in a narrow viewport", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 936, height: 776 });
+    await page
+      .getByRole("row", { name: /测试用户A/ })
+      .getByRole("button", { name: "合并" })
+      .click();
+
+    const dialog = page.getByRole("dialog");
+    await dialog.getByText(LONG_PERSON_NAME, { exact: true }).click();
+
+    const confirmBtn = dialog.getByRole("button", {
+      name: "确认将 1 人合并入【测试用户A】",
+    });
+    await expect(confirmBtn).toBeVisible();
+
+    const geometry = await dialog.evaluate((element, longName) => {
+      const dialogRect = element.getBoundingClientRect();
+      const footer = element.querySelector<HTMLElement>("[data-merge-footer]");
+      const body = element.querySelector<HTMLElement>("[data-merge-scroll-body]");
+      const selectedBadge = element.querySelector<HTMLElement>("[data-selected-source-badge]");
+      const candidate = [...element.querySelectorAll<HTMLElement>("[data-merge-candidate]")].find(
+        (node) => node.textContent?.includes(longName),
+      );
+      const action = element.querySelector<HTMLButtonElement>("[data-merge-confirm]");
+      if (!footer || !body || !selectedBadge || !candidate || !action) {
+        throw new Error(
+          `merge layout missing: footer=${Boolean(footer)} body=${Boolean(body)} badge=${Boolean(selectedBadge)} candidate=${Boolean(candidate)} action=${Boolean(action)}`,
+        );
+      }
+      const footerRect = footer.getBoundingClientRect();
+      const bodyRect = body.getBoundingClientRect();
+      const actionRect = action.getBoundingClientRect();
+      return {
+        dialogLeft: dialogRect.left,
+        dialogRight: dialogRect.right,
+        dialogClientWidth: element.clientWidth,
+        dialogScrollWidth: element.scrollWidth,
+        footerTop: footerRect.top,
+        footerBottom: footerRect.bottom,
+        bodyBottom: bodyRect.bottom,
+        actionLeft: actionRect.left,
+        actionRight: actionRect.right,
+        actionBottom: actionRect.bottom,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        badgeClientWidth: selectedBadge.clientWidth,
+        badgeScrollWidth: selectedBadge.scrollWidth,
+        candidateClientHeight: candidate.clientHeight,
+        candidateScrollHeight: candidate.scrollHeight,
+      };
+    }, LONG_PERSON_NAME);
+
+    expect(geometry.dialogLeft).toBeGreaterThanOrEqual(0);
+    expect(geometry.dialogRight).toBeLessThanOrEqual(geometry.viewportWidth);
+    expect(geometry.dialogScrollWidth).toBeLessThanOrEqual(geometry.dialogClientWidth + 1);
+    expect(geometry.badgeScrollWidth).toBeLessThanOrEqual(geometry.badgeClientWidth + 1);
+    expect(geometry.candidateScrollHeight).toBeLessThanOrEqual(geometry.candidateClientHeight + 1);
+    expect(geometry.actionLeft).toBeGreaterThanOrEqual(geometry.dialogLeft);
+    expect(geometry.actionRight).toBeLessThanOrEqual(geometry.dialogRight);
+    expect(geometry.bodyBottom).toBeLessThanOrEqual(geometry.footerTop + 1);
+    expect(geometry.footerBottom).toBeLessThanOrEqual(geometry.viewportHeight);
+    expect(geometry.actionBottom).toBeLessThanOrEqual(geometry.viewportHeight);
+
+    await confirmBtn.click();
+    const postPayload = await page.evaluate(
+      () => (window as unknown as { __lastApiPost: { body: unknown } }).__lastApiPost.body,
+    );
+    expect(postPayload).toEqual({
+      target_person_id: "p1",
+      source_person_ids: ["p4"],
     });
   });
 

@@ -1,25 +1,30 @@
-"""astrbot_plugin_identity_directory — 跨平台身份通讯录.
-
-Passively observes every message (without waking the pipeline), registers
-platform accounts into a SQLite-backed directory, and exposes a WebUI
-management page plus a Python API for other plugins to resolve senders to
-stable persons.
-"""
+"""astrbot_plugin_identity_directory — 跨平台身份通讯录。"""
 
 from __future__ import annotations
 
-import asyncio
+import inspect
+from datetime import UTC, datetime
 from pathlib import Path
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
+from astrbot.core.agent.message import TextPart
 from astrbot.core.config import AstrBotConfig
 from astrbot.core.star.filter.custom_filter import CustomFilter
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 from .core.extractor import extract_snapshot
-from .core.models import SenderSnapshot
+from .core.hindsight import (
+    PersonMemoryClient,
+    PersonMemoryError,
+    build_memory_content,
+    build_memory_context,
+    build_person_memory_scope,
+    build_turn_document_id,
+    load_or_create_salt,
+)
+from .core.prompt import build_identity_context
 from .core.service import DirectoryConfig, DirectoryService
 from .core.webapi import DirectoryWebApi
 
@@ -27,26 +32,17 @@ PLUGIN_NAME = "astrbot_plugin_identity_directory"
 
 
 class PassiveIdentityCaptureFilter(CustomFilter):
-    """Register senders without waking the pipeline.
-
-    Returning False keeps the event unwoken: the associated handler is never
-    invoked and the message flow is untouched. The actual registration is a
-    fire-and-forget asyncio task so this synchronous filter stays fast.
-
-    AstrBot's custom-filter decorator instantiates filters with only the
-    ``raise_error`` argument, so the directory service is resolved lazily from
-    the star registry on each event instead of being injected.
-    """
+    """Register senders without waking the message pipeline."""
 
     @staticmethod
     def _resolve_service() -> DirectoryService | None:
         from astrbot.core.star.star import star_map
 
-        for module_path, metadata in star_map.items():
-            if module_path.endswith(f"{PLUGIN_NAME}.main"):
-                star_cls = getattr(metadata, "star_cls", None)
-                if star_cls is not None:
-                    return getattr(star_cls, "directory_service", None)
+        for metadata in star_map.values():
+            candidate = getattr(metadata, "star_cls", metadata)
+            service = getattr(candidate, "directory_service", None)
+            if isinstance(service, DirectoryService):
+                return service
         return None
 
     def filter(self, event: AstrMessageEvent, cfg: AstrBotConfig) -> bool:  # noqa: ARG002
@@ -58,30 +54,19 @@ class PassiveIdentityCaptureFilter(CustomFilter):
         except Exception:  # noqa: BLE001 — observation must never break delivery
             logger.exception("[identity-directory] failed to extract sender snapshot")
             return False
-        if snapshot is None:
-            return False
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self._safe_register(service, snapshot))
-        except RuntimeError:
-            # No running loop (e.g. during tests); drop silently.
-            pass
+        if snapshot is not None:
+            service.schedule_observation(snapshot)
         return False
-
-    @staticmethod
-    async def _safe_register(service: DirectoryService, snapshot: SenderSnapshot) -> None:
-        try:
-            await service.register_snapshot(snapshot)
-        except Exception:  # noqa: BLE001
-            logger.exception("[identity-directory] failed to register sender")
 
 
 class IdentityDirectory(Star):
     def __init__(self, context: Context, config: dict | None = None) -> None:
         super().__init__(context)
         self._raw_config = config or {}
-        db_path = Path(get_astrbot_plugin_data_path()) / PLUGIN_NAME / "directory.db"
-        self.directory_service = DirectoryService(db_path, DirectoryConfig(self._raw_config))
+        db_dir = Path(get_astrbot_plugin_data_path()) / PLUGIN_NAME
+        self.directory_service = DirectoryService(db_dir / "directory.db", DirectoryConfig(self._raw_config))
+        self._memory_salt = load_or_create_salt(db_dir / "hindsight_scope_salt.txt")
+        self._memory_client: PersonMemoryClient | None = None
         self._web_api = DirectoryWebApi(self.directory_service)
         self._register_web_apis(context)
 
@@ -99,6 +84,8 @@ class IdentityDirectory(Star):
         )
 
     async def terminate(self) -> None:
+        if self._memory_client is not None:
+            await self._memory_client.aclose()
         await self.directory_service.close()
 
     # ------------------------------------------------------------- #
@@ -107,9 +94,141 @@ class IdentityDirectory(Star):
 
     @filter.custom_filter(PassiveIdentityCaptureFilter, False)
     async def _passive_capture_hook(self, event: AstrMessageEvent) -> None:
-        """Placeholder handler — the filter does the work and returns False,
-        so this is never invoked. Exists only to carry the filter."""
+        """Placeholder handler; the custom filter performs the observation."""
         return
+
+    # ------------------------------------------------------------- #
+    # identity context for the current LLM request
+    # ------------------------------------------------------------- #
+
+    @filter.on_llm_request()
+    async def _inject_identity_context(self, event: AstrMessageEvent, req: object) -> None:
+        config = self.directory_service.config
+        if not config.inject_identity_context and not self._memory_recall_enabled():
+            return
+        try:
+            snapshot = extract_snapshot(event)
+            if snapshot is None:
+                return
+            resolution = await self.directory_service.resolve_event(
+                event,
+                register=config.observe_messages
+                and (config.inject_identity_context or self._memory_recall_enabled()),
+            )
+            if resolution is None:
+                return
+            parts = getattr(req, "extra_user_content_parts", None)
+            if not isinstance(parts, list):
+                return
+
+            if config.inject_identity_context:
+                context_text = build_identity_context(snapshot, resolution)
+                if context_text:
+                    parts.append(_temporary_text_part(context_text))
+
+            if not self._memory_recall_enabled():
+                return
+            person_ids = (
+                await self.directory_service.list_person_identity_ids(resolution.person.person_id)
+                if resolution.person
+                else ()
+            )
+            scope = build_person_memory_scope(
+                snapshot,
+                resolution,
+                salt=self._memory_salt,
+                person_ids=person_ids,
+                cross_group_memory=config.hindsight_cross_group_memory,
+            )
+            query = str(getattr(event, "message_str", "") or "").strip()
+            if scope is None or not query:
+                return
+            recalled = await self._person_memory_client().recall(query, scope)
+            if recalled:
+                parts.append(_temporary_text_part(recalled))
+        except PersonMemoryError as exc:
+            logger.warning("[identity-directory] Person memory recall skipped: %s", exc)
+        except Exception:  # noqa: BLE001 — identity enhancement must not break delivery
+            logger.exception("[identity-directory] failed to inject identity context")
+
+    @filter.on_llm_response()
+    async def _retain_person_memory(self, event: AstrMessageEvent, resp: object) -> None:
+        if not self._memory_retain_enabled():
+            return
+        try:
+            snapshot = extract_snapshot(event)
+            if snapshot is None:
+                return
+            resolution = await self.directory_service.resolve_event(
+                event,
+                register=self.directory_service.config.observe_messages,
+            )
+            person_ids = (
+                await self.directory_service.list_person_identity_ids(resolution.person.person_id)
+                if resolution and resolution.person
+                else ()
+            )
+            scope = build_person_memory_scope(
+                snapshot,
+                resolution,
+                salt=self._memory_salt,
+                person_ids=person_ids,
+                cross_group_memory=self.directory_service.config.hindsight_cross_group_memory,
+            )
+            if scope is None:
+                return
+            content = build_memory_content(
+                str(getattr(event, "message_str", "") or ""),
+                str(getattr(resp, "completion_text", "") or ""),
+                min_chars=self.directory_service.config.hindsight_retain_min_chars,
+            )
+            if content and resolution and resolution.person:
+                document_id = build_turn_document_id(
+                    scope,
+                    source_message_id=_event_message_id(event),
+                    content=content,
+                )
+                await self._person_memory_client().retain(
+                    content,
+                    scope,
+                    document_id=document_id,
+                    context=build_memory_context(snapshot, resolution),
+                    timestamp=_event_timestamp(event),
+                    entity_name=resolution.person.canonical_name,
+                )
+        except PersonMemoryError as exc:
+            logger.warning("[identity-directory] Person memory retain skipped: %s", exc)
+        except Exception:  # noqa: BLE001 — retention must not break delivery
+            logger.exception("[identity-directory] failed to retain Person memory")
+
+    def _memory_recall_enabled(self) -> bool:
+        config = self.directory_service.config
+        return (
+            config.hindsight_enabled
+            and config.hindsight_recall_enabled
+            and bool(config.hindsight_api_base and config.hindsight_bank_id)
+        )
+
+    def _memory_retain_enabled(self) -> bool:
+        config = self.directory_service.config
+        return (
+            config.hindsight_enabled
+            and config.hindsight_retain_enabled
+            and bool(config.hindsight_api_base and config.hindsight_bank_id)
+        )
+
+    def _person_memory_client(self) -> PersonMemoryClient:
+        if self._memory_client is None:
+            config = self.directory_service.config
+            self._memory_client = PersonMemoryClient(
+                config.hindsight_api_base,
+                config.hindsight_bank_id,
+                api_key=config.hindsight_api_key,
+                recall_limit=config.hindsight_recall_limit,
+                timeout_seconds=config.hindsight_timeout_seconds,
+                item_max_chars=config.hindsight_item_max_chars,
+            )
+        return self._memory_client
 
     # ------------------------------------------------------------- #
     # commands
@@ -122,8 +241,9 @@ class IdentityDirectory(Star):
         if snapshot is None:
             yield event.plain_result("无法识别当前账号。")
             return
-        resolution = await self.directory_service.resolve_sender(
-            snapshot.platform, snapshot.platform_user_id, snapshot.group_id
+        resolution = await self.directory_service.resolve_event(
+            event,
+            register=self.directory_service.config.observe_messages,
         )
         if resolution is None or resolution.person is None:
             yield event.plain_result(f"通讯录里还没有你（{snapshot.platform}:{snapshot.platform_user_id}）。")
@@ -143,19 +263,19 @@ class IdentityDirectory(Star):
     def _register_web_apis(self, context: Context) -> None:
         routes: list[tuple[str, object, list[str], str]] = [
             ("/stats", self._web_api.stats, ["GET"], "Directory stats"),
-            ("/repair", self._web_api.repair_unlinked, ["POST"], "Link stub persons to unlinked accounts"),
+            ("/repair", self._web_api.repair_unlinked, ["POST"], "Link eligible unlinked accounts"),
             ("/persons", self._web_api.list_persons, ["GET"], "List persons"),
             ("/persons/create", self._web_api.create_person, ["POST"], "Create person"),
             ("/persons/<person_id>", self._web_api.get_person, ["GET"], "Get person detail"),
             ("/persons/<person_id>/update", self._web_api.update_person, ["POST"], "Update person"),
             ("/persons/<person_id>/delete", self._web_api.delete_person, ["POST"], "Delete person"),
-            ("/persons/merge", self._web_api.merge_persons, ["POST"], "Merge two persons"),
+            ("/persons/merge", self._web_api.merge_persons, ["POST"], "Merge persons"),
             ("/accounts", self._web_api.list_accounts, ["GET"], "List accounts"),
             ("/accounts/<account_id>/link", self._web_api.link_account, ["POST"], "Link account to person"),
             ("/accounts/<account_id>/unlink", self._web_api.unlink_account, ["POST"], "Unlink account"),
             ("/accounts/<account_id>/delete", self._web_api.delete_account, ["POST"], "Delete account"),
             ("/accounts/<account_id>/aliases", self._web_api.list_aliases, ["GET"], "List account aliases"),
-            ("/accounts/<account_id>/aliases/add", self._web_api.add_alias, ["POST"], "Add alias"),
+            ("/accounts/<account_id>/aliases/add", self._web_api.add_alias, ["POST"], "Add account alias"),
             ("/aliases/<alias_id>/delete", self._web_api.delete_alias, ["POST"], "Delete alias"),
             (
                 "/memberships/<membership_id>/update",
@@ -172,5 +292,59 @@ class IdentityDirectory(Star):
             ("/resolve", self._web_api.resolve, ["GET"], "Resolve platform account"),
             ("/lookup", self._web_api.find_by_name, ["GET"], "Find persons by display name"),
         ]
-        for path, handler, methods, desc in routes:
-            context.register_web_api(f"/{PLUGIN_NAME}{path}", handler, methods, desc)
+        for path, handler, methods, description in routes:
+            context.register_web_api(f"/{PLUGIN_NAME}{path}", handler, methods, description)
+
+
+def _event_message_id(event: AstrMessageEvent) -> str:
+    getter = getattr(event, "get_message_id", None)
+    if callable(getter):
+        try:
+            value = getter()
+        except (AttributeError, TypeError):
+            value = None
+        if value not in (None, ""):
+            return str(value)
+    message_obj = getattr(event, "message_obj", None)
+    return str(getattr(message_obj, "message_id", "") or "")
+
+
+def _event_timestamp(event: AstrMessageEvent) -> str | None:
+    message_obj = getattr(event, "message_obj", None)
+    raw = getattr(message_obj, "timestamp", None)
+    if raw in (None, ""):
+        return None
+    if isinstance(raw, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(raw), tz=UTC).isoformat()
+        except (OverflowError, OSError, ValueError):
+            return None
+    text = str(raw).strip()
+    return text or None
+
+
+def _temporary_text_part(text: str) -> TextPart:
+    """Construct a temporary part across supported AstrBot TextPart signatures."""
+    parameters = inspect.signature(TextPart).parameters
+    if "text" in parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    ):
+        part = TextPart(text=text)
+    elif any(
+        parameter.kind
+        in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.VAR_POSITIONAL,
+        }
+        for parameter in parameters.values()
+    ):
+        part = TextPart(text)
+    else:
+        raise TypeError("TextPart constructor does not accept a text value")
+
+    mark_as_temp = getattr(part, "mark_as_temp", None)
+    if not callable(mark_as_temp):
+        raise TypeError("TextPart does not support mark_as_temp()")
+    marked = mark_as_temp()
+    return part if marked is None else marked

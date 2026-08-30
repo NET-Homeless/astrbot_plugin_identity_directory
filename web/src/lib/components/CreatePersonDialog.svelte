@@ -54,7 +54,7 @@
     <div class="flex flex-col gap-4 py-2">
       <div class="grid gap-1.5">
         <label for="c-name" class="text-xs font-semibold text-muted-foreground">规范名（必填）</label>
-        <Input id="c-name" bind:value={name} placeholder="如：starshine、联系人乙" class="h-9 font-medium" />
+        <Input id="c-name" bind:value={name} placeholder="如：联系人甲、联系人乙" class="h-9 font-medium" />
       </div>
 
       <div class="grid gap-1.5">

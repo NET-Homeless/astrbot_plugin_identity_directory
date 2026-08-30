@@ -32,9 +32,11 @@ export interface Alias {
 export interface Account {
   account_id: string;
   platform: string;
+  platform_instance_id: string;
   platform_user_id: string;
   username: string;
   person_id: string | null;
+  suppress_auto_stub: boolean;
   first_seen: number;
   last_seen: number;
 }
@@ -63,4 +65,5 @@ export interface PersonListResponse {
 
 export interface AccountListResponse {
   items: AccountView[];
+  total: number;
 }

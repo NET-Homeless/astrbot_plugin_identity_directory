@@ -26,7 +26,7 @@ class MergeStatus(StrEnum):
 class Person:
     """A real-world human (or bot persona) — the stable identity anchor."""
 
-    person_id: str  # uuid4 hex
+    person_id: str  # uuid4 hex; retained forever when used by a merge redirect
     canonical_name: str
     notes: str = ""
     tags: tuple[str, ...] = ()
@@ -38,15 +38,22 @@ class Person:
 
 @dataclass(frozen=True, slots=True)
 class Account:
-    """One account on one platform. Identity key is (platform, platform_user_id)."""
+    """One account on one platform instance.
+
+    The immutable identity key is ``(platform, platform_instance_id,
+    platform_user_id)``. ``platform`` is the adapter type; the instance ID
+    distinguishes multiple bots/workspaces using the same adapter.
+    """
 
     account_id: str  # uuid4 hex
     platform: str  # e.g. "aiocqhttp", "rocket_chat", "telegram"
     platform_user_id: str  # immutable platform id: QQ number, RC _id, TG user id
-    username: str = ""  # platform handle (mutable on some platforms); "" if none
+    username: str = ""  # platform handle (mutable on some platforms)
     person_id: str | None = None  # None => unlinked account
     first_seen: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
+    platform_instance_id: str = ""  # stable adapter/bot/workspace ID
+    suppress_auto_stub: bool = False  # manual unlink must not recreate a person
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +62,7 @@ class Membership:
 
     membership_id: str  # uuid4 hex
     account_id: str
-    group_id: str  # platform-scoped group id
+    group_id: str  # scoped by the account's platform instance
     current_card: str = ""  # current group card (mutable display name)
     first_seen: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
@@ -126,3 +133,4 @@ class SenderSnapshot:
     username: str = ""
     group_id: str | None = None
     is_bot: bool = False
+    platform_instance_id: str = ""  # stable adapter/bot/workspace ID

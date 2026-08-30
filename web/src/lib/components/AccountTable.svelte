@@ -19,15 +19,19 @@
     KeyRound,
     ExternalLink,
     MessageSquare,
+    ChevronLeft,
+    ChevronRight,
   } from "lucide-svelte";
   import type { AccountView } from "$lib/types";
 
   let searchTimeout: number | null = null;
   let platformTimeout: number | null = null;
+  let instanceTimeout: number | null = null;
 
   function handleSearchInput(e: Event) {
     const target = e.target as HTMLInputElement;
     directoryState.accountQuery = target.value;
+    directoryState.accountPage = 1;
     if (searchTimeout !== null) clearTimeout(searchTimeout);
     searchTimeout = window.setTimeout(() => {
       directoryState.loadAccounts();
@@ -37,11 +41,26 @@
   function handlePlatformInput(e: Event) {
     const target = e.target as HTMLInputElement;
     directoryState.accountPlatform = target.value;
+    directoryState.accountPage = 1;
     if (platformTimeout !== null) clearTimeout(platformTimeout);
     platformTimeout = window.setTimeout(() => {
       directoryState.loadAccounts();
     }, 280);
   }
+
+  function handleInstanceInput(e: Event) {
+    const target = e.target as HTMLInputElement;
+    directoryState.accountInstance = target.value;
+    directoryState.accountPage = 1;
+    if (instanceTimeout !== null) clearTimeout(instanceTimeout);
+    instanceTimeout = window.setTimeout(() => {
+      directoryState.loadAccounts();
+    }, 280);
+  }
+
+  const totalPages = $derived(
+    Math.max(1, Math.ceil(directoryState.accountTotal / directoryState.accountPageSize))
+  );
 
   function formatTime(timestamp: number): string {
     if (!timestamp) return "—";
@@ -77,7 +96,7 @@
 <div class="flex flex-col gap-4">
   <!-- Toolbar -->
   <div class="flex flex-wrap items-center justify-between gap-3">
-    <div class="flex flex-wrap items-center gap-2 flex-1 max-w-xl">
+    <div class="flex flex-wrap items-center gap-2 flex-1 max-w-3xl">
       <div class="relative min-w-[200px] flex-1">
         <Search class="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
         <Input
@@ -98,6 +117,16 @@
           class="h-9"
         />
       </div>
+
+      <div class="w-44">
+        <Input
+          type="text"
+          placeholder="平台实例 ID"
+          value={directoryState.accountInstance}
+          oninput={handleInstanceInput}
+          class="h-9"
+        />
+      </div>
     </div>
 
     <div class="flex items-center gap-4">
@@ -107,6 +136,7 @@
           checked={directoryState.accountUnlinked}
           onchange={(e) => {
             directoryState.accountUnlinked = (e.target as HTMLInputElement).checked;
+            directoryState.accountPage = 1;
             directoryState.loadAccounts();
           }}
           class="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary dark:border-gray-700"
@@ -144,12 +174,19 @@
           {#each directoryState.accounts as account (account.account_id)}
             <TableRow class="hover:bg-muted/30 transition-colors">
               <TableCell>
-                <Badge
-                  variant="outline"
-                  class={"px-2 py-0.5 text-[11px] font-medium " + getPlatformBadgeClass(account.platform)}
-                >
-                  {account.platform}
-                </Badge>
+                <div class="flex min-w-0 flex-col items-start gap-1">
+                  <Badge
+                    variant="outline"
+                    class={"max-w-[110px] px-2 py-0.5 text-[11px] font-medium " + getPlatformBadgeClass(account.platform)}
+                  >
+                    <span class="truncate">{account.platform}</span>
+                  </Badge>
+                  {#if account.platform_instance_id && account.platform_instance_id !== account.platform}
+                    <code class="block max-w-[110px] truncate text-[10px] text-muted-foreground" title={account.platform_instance_id}>
+                      {account.platform_instance_id}
+                    </code>
+                  {/if}
+                </div>
               </TableCell>
 
               <TableCell>
@@ -252,6 +289,34 @@
   </div>
 
   <div class="flex items-center justify-between text-xs text-muted-foreground px-1">
-    <span>当前显示 {directoryState.accounts.length} 条账号记录</span>
+    <span>
+      共 <strong class="font-medium text-foreground">{directoryState.accountTotal}</strong> 个账号
+    </span>
+
+    <div class="flex items-center gap-2">
+      <span>第 {directoryState.accountPage} / {totalPages} 页</span>
+      <Button
+        variant="outline"
+        size="icon-sm"
+        disabled={directoryState.accountPage <= 1}
+        onclick={() => {
+          directoryState.accountPage -= 1;
+          directoryState.loadAccounts();
+        }}
+      >
+        <ChevronLeft class="h-4 w-4" />
+      </Button>
+      <Button
+        variant="outline"
+        size="icon-sm"
+        disabled={directoryState.accountPage >= totalPages}
+        onclick={() => {
+          directoryState.accountPage += 1;
+          directoryState.loadAccounts();
+        }}
+      >
+        <ChevronRight class="h-4 w-4" />
+      </Button>
+    </div>
   </div>
 </div>

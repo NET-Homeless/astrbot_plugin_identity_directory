@@ -113,7 +113,7 @@
         <div class="grid gap-4">
           <div class="grid gap-1.5">
             <label for="f-canonical" class="text-xs font-semibold text-muted-foreground">规范名（全局唯一主昵称）</label>
-            <Input id="f-canonical" bind:value={formName} placeholder="如：starshine、联系人乙" class="h-9 font-medium" />
+            <Input id="f-canonical" bind:value={formName} placeholder="如：联系人甲、联系人乙" class="h-9 font-medium" />
           </div>
 
           <div class="grid gap-1.5">

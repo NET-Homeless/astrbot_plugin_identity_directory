@@ -22,5 +22,77 @@
     "type": "bool",
     "hint": "是否把其他 bot 账号也登记进通讯录。",
     "default": false
+  },
+  "inject_identity_context": {
+    "description": "注入当前身份",
+    "type": "bool",
+    "hint": "在当前 LLM 请求中临时加入规范名和当前显示名，不写入会话历史。",
+    "default": true
+  },
+  "hindsight_enabled": {
+    "description": "启用 Person 级 Hindsight 记忆",
+    "type": "bool",
+    "hint": "由通讯录插件直接调用 Hindsight 公共 API，以稳定 person_id 隔离召回与写入；不会修改或依赖 astrbot_plugin_hindsight_memory。",
+    "default": false
+  },
+  "hindsight_recall_enabled": {
+    "description": "召回 Person 记忆",
+    "type": "bool",
+    "hint": "启用后，在当前 LLM 请求中临时注入该 Person 在相同受众范围内的相关记忆。",
+    "default": true
+  },
+  "hindsight_retain_enabled": {
+    "description": "写入 Person 记忆",
+    "type": "bool",
+    "hint": "启用后，把符合最小长度且不含明显凭据的对话写入稳定 Person 作用域。",
+    "default": true
+  },
+  "hindsight_cross_group_memory": {
+    "description": "跨群共享 Person 记忆",
+    "type": "bool",
+    "hint": "关闭时，群聊记忆只在同一平台实例和群内召回；开启后，同一 Person 在私聊、其他群和其他平台都可召回。可能把一个群里的事实带到另一个群，默认关闭。",
+    "default": false
+  },
+  "hindsight_api_base": {
+    "description": "Hindsight API 地址",
+    "type": "string",
+    "hint": "Docker 内访问宿主机通常使用 http://host.docker.internal:8899；macOS 宿主机直接访问建议使用 127.0.0.1，避免 localhost 的 IPv6 转发问题。",
+    "default": "http://host.docker.internal:8899"
+  },
+  "hindsight_api_key": {
+    "description": "Hindsight API Key",
+    "type": "string",
+    "hint": "本地未启用认证时可留空。",
+    "default": ""
+  },
+  "hindsight_bank_id": {
+    "description": "Hindsight Bank",
+    "type": "string",
+    "hint": "Person 记忆读写使用的 Bank ID。",
+    "default": "group-mei"
+  },
+  "hindsight_recall_limit": {
+    "description": "单次召回条数",
+    "type": "int",
+    "hint": "每次最多注入多少条 Person 记忆。",
+    "default": 5
+  },
+  "hindsight_item_max_chars": {
+    "description": "单条记忆最大字符数",
+    "type": "int",
+    "hint": "注入前截断单条记忆，限制提示词体积。",
+    "default": 360
+  },
+  "hindsight_retain_min_chars": {
+    "description": "写入最小字符数",
+    "type": "int",
+    "hint": "低于该长度的短消息不写入 Person 记忆。",
+    "default": 8
+  },
+  "hindsight_timeout_seconds": {
+    "description": "Hindsight 请求超时（秒）",
+    "type": "int",
+    "hint": "召回或写入超过该时间会跳过，不阻断正常消息。",
+    "default": 30
   }
 }
