@@ -1,0 +1,26 @@
+{
+  "observe_messages": {
+    "description": "自动登记账号",
+    "type": "bool",
+    "hint": "开启后，插件会监听消息事件，自动把发言者的平台账号登记进通讯录（不会自动合并到已有联系人）。",
+    "default": true
+  },
+  "auto_track_display_names": {
+    "description": "自动追踪显示名变化",
+    "type": "bool",
+    "hint": "开启后，当同一账号的昵称/群名片发生变化时，自动把新名字记入该账号的显示名历史（aliases），供消息中提及消歧使用。",
+    "default": true
+  },
+  "auto_stub_person": {
+    "description": "自动创建联系人",
+    "type": "bool",
+    "hint": "开启后，新账号首次发言时自动为其创建一个独立联系人（stub），之后可在管理页手动合并。关闭则只登记账号、不建联系人。",
+    "default": true
+  },
+  "capture_bots": {
+    "description": "登记 Bot 账号",
+    "type": "bool",
+    "hint": "是否把其他 bot 账号也登记进通讯录。",
+    "default": false
+  }
+}

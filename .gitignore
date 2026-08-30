@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# WebUI artifacts & dependencies
+web/node_modules/
+web/.tmp/
+web/.turbo/
+web/test-results/
+
+# Local secrets and runtime data
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+.DS_Store
