@@ -2,7 +2,7 @@ name: astrbot_plugin_identity_directory
 display_name: 通讯录
 desc: 跨平台身份通讯录：将各平台账号/各群名片归并为同一个人，提供 WebUI 管理与身份解析 API。
 short_desc: 跨平台身份通讯录，认出同一个人。
-version: 0.4.0
+version: 0.4.2
 author: 星光の殲滅者
 repo: https://github.com/NET-Homeless/astrbot_plugin_identity_directory
 astrbot_version: ">=4.16,<5"

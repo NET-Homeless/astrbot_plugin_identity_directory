@@ -7,9 +7,10 @@ import functools
 import logging
 import secrets
 import time
+from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from .errors import DirectoryClosedError
@@ -35,15 +36,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
+_BINDING_CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+_BINDING_CODE_LENGTH = 6
+_BINDING_MAX_INVALID_ATTEMPTS = 5
+_BINDING_ATTEMPT_WINDOW_SECONDS = 300
+
 
 @dataclass(frozen=True, slots=True)
 class BindingTicket:
     code: str
     person_id: str
-    person_name: str
     creator_platform: str
+    creator_platform_instance_id: str
     creator_user_id: str
     expires_at: float
+    pending_target: SenderSnapshot | None = None
 
 
 class DirectoryConfig:
@@ -64,6 +71,7 @@ class DirectoryConfig:
         self.capture_bots = bool(raw.get("capture_bots", False))
         self.inject_identity_context = bool(raw.get("inject_identity_context", True))
         self.allow_self_persona = bool(raw.get("allow_self_persona", True))
+        self.allow_member_lookup = bool(raw.get("allow_member_lookup", False))
         raw_mode = str(raw.get("umo_filter_mode", "blacklist") or "blacklist").strip().casefold()
         self.umo_filter_mode = raw_mode if raw_mode in {"blacklist", "whitelist"} else "blacklist"
         raw_umo_filter_list = raw.get("umo_filter_list", [])
@@ -124,6 +132,8 @@ class DirectoryService:
         self._accepting_observations = True
         self._closed = False
         self._binding_tickets: dict[str, BindingTicket] = {}
+        self._binding_ticket_lock = asyncio.Lock()
+        self._binding_invalid_attempts: dict[tuple[str, str, str], deque[float]] = {}
         self.config = config
 
     def refresh_config(self, raw: Mapping[str, Any] | None = None) -> DirectoryConfig:
@@ -292,6 +302,12 @@ class DirectoryService:
         """Find aliases with current-group matches before platform-wide aliases."""
 
         def _work() -> list[MentionCandidate]:
+            def _in_current_group(account: Account) -> bool:
+                return group_id is not None and any(
+                    membership.group_id == group_id
+                    for membership in self._store.list_memberships(account.account_id)
+                )
+
             candidates: list[MentionCandidate] = []
             seen: set[str] = set()
             aliases = self._store.find_aliases_by_name(
@@ -313,7 +329,7 @@ class DirectoryService:
                         person=person,
                         account=account,
                         matched_name=alias.name,
-                        in_group=group_id is not None and alias.group_id == group_id,
+                        in_group=_in_current_group(account),
                     )
                 )
 
@@ -321,16 +337,16 @@ class DirectoryService:
             for person in persons:
                 if person.person_id in seen or person.canonical_name != name:
                     continue
-                account = next(
-                    iter(
-                        self._store.list_accounts(
-                            person_id=person.person_id,
-                            platform=platform,
-                            platform_instance_id=platform_instance_id,
-                            limit=1,
-                        )
-                    ),
-                    None,
+                accounts = self._store.list_accounts(
+                    person_id=person.person_id,
+                    platform=platform,
+                    platform_instance_id=platform_instance_id,
+                    limit=100,
+                )
+                account = (
+                    next((candidate for candidate in accounts if _in_current_group(candidate)), None)
+                    if group_id is not None
+                    else next(iter(accounts), None)
                 )
                 if account is None:
                     continue
@@ -340,7 +356,7 @@ class DirectoryService:
                         person=person,
                         account=account,
                         matched_name=person.canonical_name,
-                        in_group=False,
+                        in_group=_in_current_group(account),
                     )
                 )
             return candidates
@@ -500,72 +516,132 @@ class DirectoryService:
 
         return await self._run(_work)
 
+    @staticmethod
+    def _snapshot_identity(snapshot: SenderSnapshot) -> tuple[str, str, str]:
+        platform = snapshot.platform.strip()
+        return (
+            platform.casefold(),
+            snapshot.platform_instance_id.strip() or platform,
+            snapshot.platform_user_id.strip(),
+        )
+
+    @staticmethod
+    def _ticket_creator_identity(ticket: BindingTicket) -> tuple[str, str, str]:
+        platform = ticket.creator_platform.strip()
+        return (
+            platform.casefold(),
+            ticket.creator_platform_instance_id.strip() or platform,
+            ticket.creator_user_id.strip(),
+        )
+
+    def _prune_binding_state(self, now: float) -> None:
+        self._binding_tickets = {
+            code: ticket for code, ticket in self._binding_tickets.items() if ticket.expires_at > now
+        }
+        earliest_attempt = now - _BINDING_ATTEMPT_WINDOW_SECONDS
+        for identity, attempts in tuple(self._binding_invalid_attempts.items()):
+            while attempts and attempts[0] <= earliest_attempt:
+                attempts.popleft()
+            if not attempts:
+                del self._binding_invalid_attempts[identity]
+
+    def _record_invalid_binding_attempt(self, snapshot: SenderSnapshot, now: float) -> None:
+        identity = self._snapshot_identity(snapshot)
+        attempts = self._binding_invalid_attempts.setdefault(identity, deque())
+        attempts.append(now)
+
+    def _binding_attempt_is_limited(self, snapshot: SenderSnapshot) -> bool:
+        attempts = self._binding_invalid_attempts.get(self._snapshot_identity(snapshot))
+        return attempts is not None and len(attempts) >= _BINDING_MAX_INVALID_ATTEMPTS
+
     def create_binding_ticket(
         self,
         person_id: str,
-        person_name: str,
         creator_platform: str,
+        creator_platform_instance_id: str,
         creator_user_id: str,
         ttl_seconds: int = 600,
     ) -> BindingTicket:
-        """Generate a random 6-character short code for cross-platform binding."""
+        """Create a short ticket for a creator-confirmed binding flow."""
         now = time.time()
-        self._binding_tickets = {c: t for c, t in self._binding_tickets.items() if t.expires_at > now}
+        self._prune_binding_state(now)
         while True:
-            code = secrets.token_hex(3).upper()
+            code = "".join(secrets.choice(_BINDING_CODE_ALPHABET) for _ in range(_BINDING_CODE_LENGTH))
             if code not in self._binding_tickets:
                 break
 
         ticket = BindingTicket(
             code=code,
             person_id=person_id,
-            person_name=person_name,
             creator_platform=creator_platform,
+            creator_platform_instance_id=creator_platform_instance_id,
             creator_user_id=creator_user_id,
             expires_at=now + ttl_seconds,
         )
         self._binding_tickets[code] = ticket
         return ticket
 
-    async def redeem_binding_ticket(
+    async def submit_binding_ticket(self, code: str, target_snapshot: SenderSnapshot) -> tuple[bool, str]:
+        """Register a target account for creator confirmation without changing directory data."""
+        normalized_code = code.strip().upper()
+        now = time.time()
+        async with self._binding_ticket_lock:
+            self._prune_binding_state(now)
+            if self._binding_attempt_is_limited(target_snapshot):
+                return False, "绑定码尝试过于频繁，请 5 分钟后再试。"
+
+            ticket = self._binding_tickets.get(normalized_code)
+            if ticket is None:
+                self._record_invalid_binding_attempt(target_snapshot, now)
+                return False, "绑定码不存在或已过期，请重新申请。"
+            if self._snapshot_identity(target_snapshot) == self._ticket_creator_identity(ticket):
+                return False, "当前账号即为绑定码发起账号，无需重复绑定。"
+            if ticket.pending_target is not None:
+                if self._snapshot_identity(target_snapshot) == self._snapshot_identity(ticket.pending_target):
+                    return False, "该账号已提交绑定请求，请等待发起账号确认。"
+                return False, "该绑定码已被另一账号提交，请让发起账号确认或重新申请。"
+
+            self._binding_tickets[normalized_code] = replace(ticket, pending_target=target_snapshot)
+            self._binding_invalid_attempts.pop(self._snapshot_identity(target_snapshot), None)
+            return True, "绑定请求已提交，等待发起账号确认。"
+
+    async def confirm_binding_ticket(
         self,
         code: str,
-        target_snapshot: SenderSnapshot,
+        creator_snapshot: SenderSnapshot,
     ) -> tuple[bool, str, Person | None]:
-        """Redeem a binding ticket and merge/link the target sender into the ticket's person."""
-        now = time.time()
+        """Atomically consume a creator-confirmed ticket, then merge its pending target."""
         normalized_code = code.strip().upper()
-        ticket = self._binding_tickets.get(normalized_code)
-        if ticket is None or ticket.expires_at <= now:
-            if ticket is not None:
-                self._binding_tickets.pop(normalized_code, None)
-            return False, "绑定码不存在或已过期，请重新申请。", None
+        now = time.time()
+        async with self._binding_ticket_lock:
+            self._prune_binding_state(now)
+            ticket = self._binding_tickets.get(normalized_code)
+            if ticket is None:
+                return False, "绑定码不存在或已过期，请重新申请。", None
+            if self._snapshot_identity(creator_snapshot) != self._ticket_creator_identity(ticket):
+                return False, "只有绑定码发起账号可以确认。", None
+            pending_target = ticket.pending_target
+            if pending_target is None:
+                return False, "尚未有另一账号提交绑定请求。", None
+            ticket = self._binding_tickets.pop(normalized_code)
 
-        if (
-            target_snapshot.platform.casefold() == ticket.creator_platform.casefold()
-            and target_snapshot.platform_user_id == ticket.creator_user_id
-        ):
-            return False, "当前账号即为绑定码发起账号，无需重复绑定。", None
-
-        target_resolution = await self.register_snapshot(target_snapshot)
+        target_resolution = await self.register_snapshot(pending_target)
         if target_resolution is None:
-            return False, "当前账号注册失败，无法完成绑定。", None
+            return False, "目标账号注册失败，绑定码已作废，请重新申请。", None
 
         target_person = target_resolution.person
         source_account = target_resolution.account
-
         if target_person is not None and target_person.person_id != ticket.person_id:
             merged = await self.merge_persons(
                 source_person_id=target_person.person_id,
                 target_person_id=ticket.person_id,
             )
             if not merged:
-                return False, "合并联系人主体失败。", None
+                return False, "合并联系人主体失败，绑定码已作废，请重新申请。", None
         elif source_account is not None and source_account.person_id != ticket.person_id:
             linked = await self.link_account(source_account.account_id, ticket.person_id)
             if not linked:
-                return False, "关联账号至目标联系人失败。", None
+                return False, "关联账号至目标联系人失败，绑定码已作废，请重新申请。", None
 
-        self._binding_tickets.pop(normalized_code, None)
         target_person_obj = await self._run(self._store.get_person, ticket.person_id)
         return True, "绑定成功", target_person_obj

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,11 +34,13 @@ class DirectoryConfigTests(unittest.TestCase):
         assert config.umo_filter_list == ()
         assert not config.is_umo_allowed("aiocqhttp:GroupMessage:123")
 
-    def test_allow_self_persona_config(self) -> None:
+    def test_command_access_configs(self) -> None:
         config = DirectoryConfig({})
         assert config.allow_self_persona is True
-        config.refresh({"allow_self_persona": False})
+        assert config.allow_member_lookup is False
+        config.refresh({"allow_self_persona": False, "allow_member_lookup": True})
         assert config.allow_self_persona is False
+        assert config.allow_member_lookup is True
 
 
 class CoreServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -159,6 +162,50 @@ class CoreServiceTests(unittest.IsolatedAsyncioTestCase):
         assert candidates[0].account.platform_user_id == "u1"
         await svc.close()
 
+    async def test_find_by_name_isolates_platform_instances(self) -> None:
+        svc = _service(self._tmp.name)
+        first = await svc.register_snapshot(
+            SenderSnapshot(
+                platform="aiocqhttp",
+                platform_instance_id="bot-a",
+                platform_user_id="a",
+                display_name="同名成员",
+                group_id="shared-group",
+            )
+        )
+        await svc.register_snapshot(
+            SenderSnapshot(
+                platform="aiocqhttp",
+                platform_instance_id="bot-b",
+                platform_user_id="b",
+                display_name="同名成员",
+                group_id="shared-group",
+            )
+        )
+        assert first is not None and first.person is not None
+
+        candidates = await svc.find_by_name(
+            "同名成员",
+            platform="aiocqhttp",
+            platform_instance_id="bot-a",
+            group_id="shared-group",
+        )
+        assert [
+            (candidate.account.platform_instance_id, candidate.account.platform_user_id)
+            for candidate in candidates
+        ] == [("bot-a", "a")]
+
+        await svc.update_person(first.person.person_id, canonical_name="规范名称")
+        canonical_candidates = await svc.find_by_name(
+            "规范名称",
+            platform="aiocqhttp",
+            platform_instance_id="bot-a",
+            group_id="shared-group",
+        )
+        assert len(canonical_candidates) == 1
+        assert canonical_candidates[0].in_group is True
+        await svc.close()
+
     async def test_search_treats_like_wildcards_as_literal_text(self) -> None:
         svc = _service(self._tmp.name)
         await svc.create_person("literal%name")
@@ -258,80 +305,175 @@ class CoreServiceTests(unittest.IsolatedAsyncioTestCase):
         assert len(view.accounts) == 3
         await svc.close()
 
-    async def test_binding_ticket_lifecycle_and_merge(self) -> None:
+    async def test_binding_ticket_requires_creator_confirmation_and_merge(self) -> None:
         svc = _service(self._tmp.name)
-        # Account A on Rocket.Chat
-        snap_a = SenderSnapshot(
+        creator_snapshot = SenderSnapshot(
             platform="rocket_chat",
-            platform_user_id="user_rc_1",
-            display_name="测试用户A_RC",
+            platform_instance_id="workspace-a",
+            platform_user_id="creator",
+            display_name="创建者",
         )
-        res_a = await svc.register_snapshot(snap_a)
-        assert res_a is not None and res_a.person is not None
-        person_a = res_a.person
-
-        # Account B on QQ
-        snap_b = SenderSnapshot(
+        creator_resolution = await svc.register_snapshot(creator_snapshot)
+        assert creator_resolution is not None and creator_resolution.person is not None
+        creator_person = creator_resolution.person
+        target_snapshot = SenderSnapshot(
             platform="aiocqhttp",
-            platform_user_id="100000002",
-            display_name="测试用户A_QQ",
+            platform_instance_id="bot-a",
+            platform_user_id="target",
+            display_name="目标账号",
         )
-        res_b = await svc.register_snapshot(snap_b)
-        assert res_b is not None and res_b.person is not None
-        person_b = res_b.person
-        assert person_a.person_id != person_b.person_id
-
-        # Create ticket on account A
         ticket = svc.create_binding_ticket(
-            person_id=person_a.person_id,
-            person_name=person_a.canonical_name,
-            creator_platform=snap_a.platform,
-            creator_user_id=snap_a.platform_user_id,
+            person_id=creator_person.person_id,
+            creator_platform=creator_snapshot.platform,
+            creator_platform_instance_id=creator_snapshot.platform_instance_id,
+            creator_user_id=creator_snapshot.platform_user_id,
             ttl_seconds=300,
         )
         assert len(ticket.code) == 6
 
-        # Attempting redeem on same account fails
-        ok_same, msg_same, _ = await svc.redeem_binding_ticket(ticket.code, snap_a)
-        assert ok_same is False
-        assert "无需重复绑定" in msg_same
+        same_ok, same_message = await svc.submit_binding_ticket(ticket.code, creator_snapshot)
+        assert same_ok is False
+        assert "无需重复绑定" in same_message
 
-        # Redeem on account B merges B into A
-        ok_b, msg_b, target_person = await svc.redeem_binding_ticket(ticket.code, snap_b)
-        assert ok_b is True
-        assert target_person is not None
-        assert target_person.person_id == person_a.person_id
+        submitted, submit_message = await svc.submit_binding_ticket(ticket.code, target_snapshot)
+        assert submitted is True
+        assert "等待" in submit_message
+        assert (await svc.stats())["accounts"] == 1
 
-        # Verify account B is now linked to person A
-        view_a = await svc.get_person_view(person_a.person_id)
-        assert view_a is not None
-        platforms = {acc.account.platform for acc in view_a.accounts}
-        assert platforms == {"rocket_chat", "aiocqhttp"}
+        wrong_confirm, wrong_message, _ = await svc.confirm_binding_ticket(ticket.code, target_snapshot)
+        assert wrong_confirm is False
+        assert "发起账号" in wrong_message
 
-        # Ticket is consumed and cannot be reused
-        ok_reuse, msg_reuse, _ = await svc.redeem_binding_ticket(ticket.code, snap_b)
-        assert ok_reuse is False
-        assert "不存在或已过期" in msg_reuse
+        confirmed, confirm_message, target_person = await svc.confirm_binding_ticket(
+            ticket.code, creator_snapshot
+        )
+        assert confirmed is True
+        assert confirm_message == "绑定成功"
+        assert target_person is not None and target_person.person_id == creator_person.person_id
 
+        view = await svc.get_person_view(creator_person.person_id)
+        assert view is not None
+        assert {
+            (account.account.platform, account.account.platform_instance_id) for account in view.accounts
+        } == {
+            ("rocket_chat", "workspace-a"),
+            ("aiocqhttp", "bot-a"),
+        }
+
+        reused, reused_message = await svc.submit_binding_ticket(ticket.code, target_snapshot)
+        assert reused is False
+        assert "不存在或已过期" in reused_message
+        await svc.close()
+
+    async def test_binding_ticket_accepts_same_user_on_different_platform_instance(self) -> None:
+        svc = _service(self._tmp.name)
+        creator_snapshot = SenderSnapshot(
+            platform="aiocqhttp",
+            platform_instance_id="bot-a",
+            platform_user_id="same-user",
+            display_name="来源账号",
+        )
+        creator_resolution = await svc.register_snapshot(creator_snapshot)
+        assert creator_resolution is not None and creator_resolution.person is not None
+        ticket = svc.create_binding_ticket(
+            person_id=creator_resolution.person.person_id,
+            creator_platform=creator_snapshot.platform,
+            creator_platform_instance_id=creator_snapshot.platform_instance_id,
+            creator_user_id=creator_snapshot.platform_user_id,
+        )
+        target_snapshot = SenderSnapshot(
+            platform="aiocqhttp",
+            platform_instance_id="bot-b",
+            platform_user_id="same-user",
+            display_name="目标账号",
+        )
+
+        submitted, _ = await svc.submit_binding_ticket(ticket.code, target_snapshot)
+        assert submitted is True
+        confirmed, _, _ = await svc.confirm_binding_ticket(ticket.code, creator_snapshot)
+        assert confirmed is True
+        view = await svc.get_person_view(creator_resolution.person.person_id)
+        assert view is not None
+        assert {account.account.platform_instance_id for account in view.accounts} == {"bot-a", "bot-b"}
+        await svc.close()
+
+    async def test_binding_ticket_submission_is_single_target_under_concurrency(self) -> None:
+        svc = _service(self._tmp.name)
+        creator_snapshot = SenderSnapshot("rocket_chat", "creator", "创建者", platform_instance_id="rc")
+        creator_resolution = await svc.register_snapshot(creator_snapshot)
+        assert creator_resolution is not None and creator_resolution.person is not None
+        ticket = svc.create_binding_ticket(
+            person_id=creator_resolution.person.person_id,
+            creator_platform=creator_snapshot.platform,
+            creator_platform_instance_id=creator_snapshot.platform_instance_id,
+            creator_user_id=creator_snapshot.platform_user_id,
+        )
+        targets = (
+            SenderSnapshot("aiocqhttp", "target-a", "目标 A", platform_instance_id="qq"),
+            SenderSnapshot("telegram", "target-b", "目标 B", platform_instance_id="tg"),
+        )
+
+        results = await asyncio.gather(
+            *(svc.submit_binding_ticket(ticket.code, target) for target in targets)
+        )
+        assert sum(success for success, _ in results) == 1
+        confirmed, _, _ = await svc.confirm_binding_ticket(ticket.code, creator_snapshot)
+        assert confirmed is True
+        view = await svc.get_person_view(creator_resolution.person.person_id)
+        assert view is not None and len(view.accounts) == 2
+        await svc.close()
+
+    async def test_binding_ticket_confirmation_is_single_use_under_concurrency(self) -> None:
+        svc = _service(self._tmp.name)
+        creator = SenderSnapshot("rocket_chat", "creator", "创建者", platform_instance_id="rc")
+        creator_resolution = await svc.register_snapshot(creator)
+        assert creator_resolution is not None and creator_resolution.person is not None
+        ticket = svc.create_binding_ticket(
+            person_id=creator_resolution.person.person_id,
+            creator_platform=creator.platform,
+            creator_platform_instance_id=creator.platform_instance_id,
+            creator_user_id=creator.platform_user_id,
+        )
+        target = SenderSnapshot("telegram", "target", "目标", platform_instance_id="tg")
+        submitted, _ = await svc.submit_binding_ticket(ticket.code, target)
+        assert submitted is True
+
+        results = await asyncio.gather(*(svc.confirm_binding_ticket(ticket.code, creator) for _ in range(2)))
+        assert sum(success for success, _, _ in results) == 1
+        view = await svc.get_person_view(creator_resolution.person.person_id)
+        assert view is not None and len(view.accounts) == 2
+        await svc.close()
+
+    async def test_binding_ticket_limits_invalid_attempts(self) -> None:
+        svc = _service(self._tmp.name)
+        target = SenderSnapshot("telegram", "target", "目标", platform_instance_id="tg")
+        for _ in range(5):
+            success, message = await svc.submit_binding_ticket("NOT-A-VALID-CODE", target)
+            assert success is False
+            assert "不存在或已过期" in message
+        limited, limited_message = await svc.submit_binding_ticket("NOT-A-VALID-CODE", target)
+        assert limited is False
+        assert "过于频繁" in limited_message
         await svc.close()
 
     async def test_binding_ticket_expired(self) -> None:
         svc = _service(self._tmp.name)
-        snap = SenderSnapshot(platform="qq", platform_user_id="123", display_name="Test")
-        res = await svc.register_snapshot(snap)
-        assert res is not None and res.person is not None
-
+        creator = SenderSnapshot("qq", "123", "Test", platform_instance_id="bot-a")
+        creator_resolution = await svc.register_snapshot(creator)
+        assert creator_resolution is not None and creator_resolution.person is not None
         ticket = svc.create_binding_ticket(
-            person_id=res.person.person_id,
-            person_name=res.person.canonical_name,
-            creator_platform=snap.platform,
-            creator_user_id=snap.platform_user_id,
+            person_id=creator_resolution.person.person_id,
+            creator_platform=creator.platform,
+            creator_platform_instance_id=creator.platform_instance_id,
+            creator_user_id=creator.platform_user_id,
             ttl_seconds=-1,
         )
-        target_snap = SenderSnapshot(platform="tg", platform_user_id="456", display_name="TGUser")
-        ok, msg, _ = await svc.redeem_binding_ticket(ticket.code, target_snap)
-        assert ok is False
-        assert "不存在或已过期" in msg
+        success, message = await svc.submit_binding_ticket(
+            ticket.code,
+            SenderSnapshot("tg", "456", "TGUser", platform_instance_id="tg"),
+        )
+        assert success is False
+        assert "不存在或已过期" in message
         await svc.close()
 
     async def test_directory_stats_and_find_by_name(self) -> None:

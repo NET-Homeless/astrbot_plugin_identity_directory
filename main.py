@@ -12,6 +12,7 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
 from astrbot.core.agent.message import TextPart
+from astrbot.core.star.filter.command import GreedyStr
 from astrbot.core.star.filter.custom_filter import CustomFilter
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
@@ -25,12 +26,13 @@ from .core.hindsight import (
     build_turn_document_id,
     load_or_create_salt,
 )
-from .core.models import Account, Person, Resolution, SenderSnapshot
+from .core.models import Account, Person, Resolution
 from .core.prompt import build_identity_context, render_persona_card
 from .core.service import DirectoryConfig, DirectoryService
 from .core.webapi import DirectoryWebApi
 
 PLUGIN_NAME = "astrbot_plugin_identity_directory"
+_MAX_SELF_PERSONA_CHARS = 500
 
 
 class PassiveIdentityCaptureFilter(CustomFilter):
@@ -285,10 +287,18 @@ class IdentityDirectory(Star):
         )
 
     @filter.command("directory", alias={"通讯录"})
-    async def directory_stats(self, event: AstrMessageEvent, sub_cmd: str = ""):  # noqa: ARG002
-        """查看通讯录统计信息。用法: /directory"""
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def directory_stats(self, event: AstrMessageEvent):
+        """查看通讯录统计信息，仅限管理员私聊。"""
         config = self._refresh_config()
         if not config.is_umo_allowed(getattr(event, "unified_msg_origin", "")):
+            return
+        snapshot = extract_snapshot(event)
+        if snapshot is None:
+            yield event.plain_result("无法识别当前账号。")
+            return
+        if snapshot.group_id:
+            yield event.plain_result("为避免公开通讯录规模，统计信息仅允许管理员在私聊中查看。")
             return
         stats = await self.directory_service.stats()
         yield event.plain_result(
@@ -300,43 +310,59 @@ class IdentityDirectory(Star):
         )
 
     @filter.command("lookup", alias={"查人"})
-    async def lookup_person(self, event: AstrMessageEvent, name: str = ""):
-        """按显示名或群名片查找联系人。用法: /lookup <名字>"""
+    async def lookup_person(self, event: AstrMessageEvent, name: GreedyStr):
+        """按显示名或群名片查找联系人。"""
         config = self._refresh_config()
         if not config.is_umo_allowed(getattr(event, "unified_msg_origin", "")):
+            return
+        snapshot = extract_snapshot(event)
+        if snapshot is None:
+            yield event.plain_result("无法识别当前账号。")
             return
         query_name = name.strip()
         if not query_name:
             yield event.plain_result("请提供要查询的名字或群名片。用法: /lookup <名字>")
             return
 
-        snapshot = extract_snapshot(event)
-        platform = snapshot.platform if snapshot else ""
-        group_id = snapshot.group_id if snapshot else None
+        is_admin = event.is_admin()
+        if not is_admin and not config.allow_member_lookup:
+            yield event.plain_result("普通成员查询当前未启用，请联系管理员。")
+            return
+        if not snapshot.group_id and not is_admin:
+            yield event.plain_result("普通成员查询仅支持当前群成员，请在群聊中使用。")
+            return
 
         candidates = await self.directory_service.find_by_name(
             query_name,
-            platform=platform,
-            group_id=group_id,
+            platform=snapshot.platform,
+            platform_instance_id=snapshot.platform_instance_id,
+            group_id=snapshot.group_id,
         )
+        if snapshot.group_id:
+            candidates = [candidate for candidate in candidates if candidate.in_group]
         if not candidates:
-            yield event.plain_result(f"未在通讯录中找到与“{query_name}”相关的联系人。")
+            scope = "本群" if snapshot.group_id else "当前平台实例"
+            yield event.plain_result(f"未在{scope}中找到与“{query_name}”相关的联系人。")
             return
 
+        include_sensitive_identifiers = is_admin and not snapshot.group_id
         lines = [f"🔍 找到 {len(candidates)} 位相关联系人："]
-        for i, cand in enumerate(candidates[:5], 1):
-            person = cand.person
-            account = cand.account
-            scope_text = "本群成员" if cand.in_group else "全局匹配"
+        for i, candidate in enumerate(candidates[:5], 1):
+            person = candidate.person
+            scope_text = "本群成员" if candidate.in_group else "当前平台实例匹配"
             lines.append(
-                f"{i}. 【{person.canonical_name}】（{scope_text}，匹配名: {cand.matched_name}）\n"
-                f"   账号: {account.platform}:{account.platform_user_id}"
+                f"{i}. 【{person.canonical_name}】（{scope_text}，匹配名: {candidate.matched_name}）"
             )
+            if include_sensitive_identifiers:
+                account = candidate.account
+                lines.append(
+                    f"   Person ID: {person.person_id}\n   账号: {account.platform}:{account.platform_user_id}"
+                )
         yield event.plain_result("\n".join(lines))
 
     @filter.command("link", alias={"绑定"})
-    async def link_account_cmd(self, event: AstrMessageEvent, code: str = ""):
-        """跨平台自助关联绑定账号。用法: /link (申请) 或 /link <6位绑定码>"""
+    async def link_account_cmd(self, event: AstrMessageEvent, action: GreedyStr):
+        """申请和确认跨平台账号绑定。"""
         config = self._refresh_config()
         if not config.is_umo_allowed(getattr(event, "unified_msg_origin", "")):
             return
@@ -345,66 +371,103 @@ class IdentityDirectory(Star):
             yield event.plain_result("无法识别当前账号。")
             return
 
-        action_arg = code.strip().upper()
-        # Case 1: 申请生成绑定码
-        if not action_arg or action_arg in {"CODE", "NEW", "申请", "GET"}:
-            resolution = await self.directory_service.resolve_event(
-                event,
-                register=True,
-            )
+        parts = action.strip().upper().split()
+        if not parts or (len(parts) == 1 and parts[0] in {"CODE", "NEW", "申请", "GET"}):
+            resolution = await self.directory_service.resolve_event(event, register=True)
             if resolution is None or resolution.person is None:
                 yield event.plain_result("无法为当前账号创建联系人主体，请先发送一条普通消息。")
                 return
             person = resolution.person
             ticket = self.directory_service.create_binding_ticket(
                 person_id=person.person_id,
-                person_name=person.canonical_name,
                 creator_platform=snapshot.platform,
+                creator_platform_instance_id=snapshot.platform_instance_id,
                 creator_user_id=snapshot.platform_user_id,
                 ttl_seconds=600,
             )
+            logger.info(
+                "[identity-directory] binding ticket created: platform=%s, platform_instance=%s",
+                snapshot.platform,
+                snapshot.platform_instance_id or snapshot.platform,
+            )
             yield event.plain_result(
                 f"🔑 跨平台绑定码已生成：【{ticket.code}】\n"
-                "• 有效时间：10 分钟\n"
-                f"• 绑定主体：【{person.canonical_name}】\n"
-                f"• 发起账号：{snapshot.platform}:{snapshot.platform_user_id}\n\n"
-                f"👉 请在另一个平台（如 QQ 或 Rocket.Chat）中向机器人发送：/link {ticket.code}\n"
-                "即可将两个账号合并为同一个人，共享跨平台身份与记忆！"
+                "• 有效时间：10 分钟。\n"
+                "• 第 1 步：在目标账号发送："
+                f"/link {ticket.code}\n"
+                "• 第 2 步：回到发起账号确认并立即完成绑定："
+                f"/link confirm {ticket.code}"
             )
             return
 
-        # Case 2: 输入绑定码完成核销
-        success, message, merged_person = await self.directory_service.redeem_binding_ticket(
-            code=action_arg,
-            target_snapshot=snapshot,
-        )
-        if not success:
-            yield event.plain_result(f"❌ 绑定失败：{message}")
+        if len(parts) == 2 and parts[0] == "CONFIRM":
+            success, message, merged_person = await self.directory_service.confirm_binding_ticket(
+                parts[1], snapshot
+            )
+            if not success:
+                logger.warning(
+                    "[identity-directory] binding confirmation rejected: platform=%s, "
+                    "platform_instance=%s, reason=%s",
+                    snapshot.platform,
+                    snapshot.platform_instance_id or snapshot.platform,
+                    message,
+                )
+                yield event.plain_result(f"❌ 无法确认绑定：{message}")
+                return
+            person_name = merged_person.canonical_name if merged_person else "统一联系人"
+            logger.info(
+                "[identity-directory] binding confirmed: platform=%s, platform_instance=%s",
+                snapshot.platform,
+                snapshot.platform_instance_id or snapshot.platform,
+            )
+            yield event.plain_result(f"🎉 跨平台账号绑定成功，已归并至【{person_name}】名下。")
             return
 
-        p_name = merged_person.canonical_name if merged_person else "统一联系人"
+        if len(parts) == 1:
+            success, message = await self.directory_service.submit_binding_ticket(parts[0], snapshot)
+            if success:
+                logger.info(
+                    "[identity-directory] binding target submitted: platform=%s, platform_instance=%s",
+                    snapshot.platform,
+                    snapshot.platform_instance_id or snapshot.platform,
+                )
+                yield event.plain_result(
+                    f"✅ 绑定请求已提交。请让绑定码发起账号执行 /link confirm {parts[0]} 确认并完成绑定。"
+                )
+            else:
+                logger.warning(
+                    "[identity-directory] binding target submission rejected: platform=%s, "
+                    "platform_instance=%s, reason=%s",
+                    snapshot.platform,
+                    snapshot.platform_instance_id or snapshot.platform,
+                    message,
+                )
+                yield event.plain_result(f"❌ 绑定失败：{message}")
+            return
+
         yield event.plain_result(
-            f"🎉 跨平台账号绑定成功！\n"
-            f"当前账号（{snapshot.platform}:{snapshot.platform_user_id}）已成功归并至【{p_name}】名下。\n"
-            "现在你在不同平台上的身份、名片与记忆已完全互通共享！"
+            "用法：/link 申请绑定码；/link <绑定码> 提交目标账号；/link confirm <绑定码> 确认并完成绑定。"
         )
 
     @filter.command("persona", alias={"画像"})
     @filter.permission_type(filter.PermissionType.ADMIN)
-    async def persona_cmd(self, event: AstrMessageEvent, target: str = ""):
-        """查看指定联系人的完整画像（管理员专属）。用法: /persona [名字/ID]"""
+    async def persona_cmd(self, event: AstrMessageEvent, target: GreedyStr):
+        """查看指定联系人的完整画像，仅限管理员私聊。"""
         config = self._refresh_config()
         if not config.is_umo_allowed(getattr(event, "unified_msg_origin", "")):
             return
 
+        target_snapshot = extract_snapshot(event)
+        if target_snapshot is None:
+            yield event.plain_result("无法识别当前账号。")
+            return
+        if target_snapshot.group_id:
+            yield event.plain_result("完整联系人画像包含敏感信息，仅允许管理员在私聊中查看。")
+            return
+
         target_name = target.strip()
         target_person: Person | None = None
-        target_snapshot = extract_snapshot(event)
-
         if not target_name:
-            if target_snapshot is None:
-                yield event.plain_result("无法识别当前账号。")
-                return
             resolution = await self.directory_service.resolve_event(event, register=True)
             if resolution is None or resolution.person is None:
                 yield event.plain_result(
@@ -413,20 +476,23 @@ class IdentityDirectory(Star):
                 return
             target_person = resolution.person
         else:
-            platform = target_snapshot.platform if target_snapshot else ""
-            group_id = target_snapshot.group_id if target_snapshot else None
-
             view = await self.directory_service.get_person_view(target_name)
             if view is not None:
                 target_person = view.person
             else:
                 candidates = await self.directory_service.find_by_name(
                     target_name,
-                    platform=platform,
-                    group_id=group_id,
+                    platform=target_snapshot.platform,
+                    platform_instance_id=target_snapshot.platform_instance_id,
                 )
                 if not candidates:
                     yield event.plain_result(f"未在通讯录中找到与“{target_name}”相关的联系人。")
+                    return
+                if len(candidates) > 1:
+                    yield event.plain_result(
+                        f"找到 {len(candidates)} 位重名联系人；请先使用 /lookup {target_name} 查看 Person ID，"
+                        "再用 /persona <Person ID> 查询。"
+                    )
                     return
                 target_person = candidates[0].person
 
@@ -441,14 +507,18 @@ class IdentityDirectory(Star):
                 client = self._person_memory_client()
                 person_ids = await self.directory_service.list_person_identity_ids(target_person.person_id)
                 scope = build_person_memory_scope(
-                    target_snapshot
-                    if target_snapshot is not None
-                    else SenderSnapshot("system", "admin", "admin"),
+                    target_snapshot,
                     Resolution(
-                        Account("", "", target_person.person_id, "admin", "admin"),
-                        target_person,
-                        None,
-                        False,
+                        account=Account(
+                            account_id="",
+                            platform="system",
+                            platform_user_id="admin",
+                            person_id=target_person.person_id,
+                            platform_instance_id="system",
+                        ),
+                        person=target_person,
+                        membership=None,
+                        created=False,
                     ),
                     salt=self._memory_salt,
                     person_ids=person_ids,
@@ -464,7 +534,7 @@ class IdentityDirectory(Star):
         yield event.plain_result(card_text)
 
     @filter.command("self_persona", alias={"自我画像"})
-    async def self_persona_cmd(self, event: AstrMessageEvent, content: str = ""):
+    async def self_persona_cmd(self, event: AstrMessageEvent, content: GreedyStr):
         """查看或更新自己在通讯录中的个人画像。用法: /self_persona [画像内容]"""
         config = self._refresh_config()
         if not config.is_umo_allowed(getattr(event, "unified_msg_origin", "")):
@@ -477,6 +547,9 @@ class IdentityDirectory(Star):
         snapshot = extract_snapshot(event)
         if snapshot is None:
             yield event.plain_result("无法识别当前账号。")
+            return
+        if snapshot.group_id:
+            yield event.plain_result("自我画像可能包含关联账号与长期记忆，仅支持与机器人私聊。")
             return
 
         resolution = await self.directory_service.resolve_event(event, register=True)
@@ -492,6 +565,9 @@ class IdentityDirectory(Star):
             yield event.plain_result("获取联系人信息失败。")
             return
         new_persona_text = content.strip()
+        if len(new_persona_text) > _MAX_SELF_PERSONA_CHARS:
+            yield event.plain_result(f"自我画像最多 {_MAX_SELF_PERSONA_CHARS} 个字符，请缩短后重试。")
+            return
         # Case: 写模式（更新/覆盖自我设定）
         if new_persona_text:
             updated_person = await self.directory_service.update_person(
