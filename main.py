@@ -53,6 +53,8 @@ class PassiveIdentityCaptureFilter(CustomFilter):
         service.refresh_config(cfg)
         if not service.config.observe_messages:
             return False
+        if not service.config.is_umo_allowed(getattr(event, "unified_msg_origin", "")):
+            return False
         try:
             snapshot = extract_snapshot(event)
         except Exception:  # noqa: BLE001 — observation must never break delivery
@@ -108,6 +110,8 @@ class IdentityDirectory(Star):
     @filter.on_llm_request()
     async def _inject_identity_context(self, event: AstrMessageEvent, req: object) -> None:
         config = self._refresh_config()
+        if not config.is_umo_allowed(getattr(event, "unified_msg_origin", "")):
+            return
         if not config.inject_identity_context and not self._memory_recall_enabled():
             return
         try:
@@ -158,6 +162,8 @@ class IdentityDirectory(Star):
     @filter.on_llm_response()
     async def _retain_person_memory(self, event: AstrMessageEvent, resp: object) -> None:
         config = self._refresh_config()
+        if not config.is_umo_allowed(getattr(event, "unified_msg_origin", "")):
+            return
         if not self._memory_retain_enabled():
             return
         try:
@@ -255,13 +261,16 @@ class IdentityDirectory(Star):
     @filter.command("whoami", alias={"我是谁"})
     async def whoami(self, event: AstrMessageEvent):
         """显示当前账号在通讯录中的身份。"""
+        config = self._refresh_config()
+        if not config.is_umo_allowed(getattr(event, "unified_msg_origin", "")):
+            return
         snapshot = extract_snapshot(event)
         if snapshot is None:
             yield event.plain_result("无法识别当前账号。")
             return
         resolution = await self.directory_service.resolve_event(
             event,
-            register=self.directory_service.config.observe_messages,
+            register=config.observe_messages,
         )
         if resolution is None or resolution.person is None:
             yield event.plain_result(f"通讯录里还没有你（{snapshot.platform}:{snapshot.platform_user_id}）。")

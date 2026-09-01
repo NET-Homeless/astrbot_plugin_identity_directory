@@ -11,6 +11,14 @@
     }
   },
   "config": {
+    "umo_filter_mode": {
+      "description": "Session UMO filter mode",
+      "hint": "Blacklist mode allows sessions outside the list; whitelist mode allows only sessions in the list. Blacklist is the default. An empty list allows all sessions in blacklist mode and no sessions in whitelist mode."
+    },
+    "umo_filter_list": {
+      "description": "Session UMO list",
+      "hint": "Enter the complete official AstrBot unified_msg_origin (UMO), for example aiocqhttp:GroupMessage:123456789; do not enter a user ID."
+    },
     "observe_messages": {
       "description": "Register senders automatically",
       "hint": "Listen to message events and register the sender's platform account. Accounts are not auto-merged into existing contacts."

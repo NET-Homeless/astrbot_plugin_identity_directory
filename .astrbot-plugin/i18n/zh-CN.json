@@ -11,6 +11,14 @@
     }
   },
   "config": {
+    "umo_filter_mode": {
+      "description": "会话 UMO 过滤模式",
+      "hint": "黑名单模式允许除名单外的会话；白名单模式仅允许名单内的会话。默认使用黑名单；名单为空时黑名单允许全部会话，白名单不允许任何会话。"
+    },
+    "umo_filter_list": {
+      "description": "会话 UMO 名单",
+      "hint": "填写 AstrBot 官方 unified_msg_origin（UMO）完整值，例如 aiocqhttp:GroupMessage:123456789；不要填写用户 ID。"
+    },
     "observe_messages": {
       "description": "自动登记账号",
       "hint": "开启后，插件会监听消息事件，自动把发言者的平台账号登记进通讯录（不会自动合并到已有联系人）。"

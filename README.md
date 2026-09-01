@@ -43,6 +43,8 @@ vp build
 | 配置 | 默认 | 说明 |
 |---|---|---|
 | `observe_messages` | 开 | 自动登记发言者账号 |
+| `umo_filter_mode` | `blacklist` | 按会话 UMO 选择黑名单或白名单模式。黑名单允许未列出的会话，白名单仅允许列出的会话；名单为空时分别表示允许全部/不允许任何会话。 |
+| `umo_filter_list` | 空 | 填写 AstrBot 官方 `unified_msg_origin`（UMO）完整值，例如 `aiocqhttp:GroupMessage:123456789`；会话不在适用名单时不会登记、注入身份或读写本插件记忆。 |
 | `auto_track_display_names` | 开 | 显示名变化时记入别名历史 |
 | `auto_stub_person` | 开 | 新账号首次发言自动建独立联系人（之后手动合并） |
 | `capture_bots` | 关 | 是否登记 bot 账号 |

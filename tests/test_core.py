@@ -21,6 +21,18 @@ def _service(tmp_path: str) -> DirectoryService:
     return DirectoryService(Path(tmp_path) / "test.db", cfg)
 
 
+class DirectoryConfigTests(unittest.TestCase):
+    def test_umo_filter_defaults_to_empty_blacklist(self) -> None:
+        config = DirectoryConfig({})
+        assert config.umo_filter_mode == "blacklist"
+        assert config.umo_filter_list == ()
+        assert config.is_umo_allowed("aiocqhttp:GroupMessage:123")
+
+        config.refresh({"umo_filter_mode": "whitelist"})
+        assert config.umo_filter_list == ()
+        assert not config.is_umo_allowed("aiocqhttp:GroupMessage:123")
+
+
 class CoreServiceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -176,6 +188,36 @@ class CoreServiceTests(unittest.IsolatedAsyncioTestCase):
         assert stats["accounts"] == 0
         await svc.close()
 
+    async def test_umo_filter_applies_to_event_resolution_and_refreshes(self) -> None:
+        blocked_umo = "aiocqhttp:GroupMessage:blocked"
+        allowed_umo = "aiocqhttp:GroupMessage:allowed"
+        raw_config = {
+            "umo_filter_mode": "blacklist",
+            "umo_filter_list": [blocked_umo],
+        }
+        svc = DirectoryService(Path(self._tmp.name) / "umo-filter.db", DirectoryConfig(raw_config))
+        blocked_event = ExtractorTests._Event(
+            "aiocqhttp",
+            ExtractorTests._Sender("blocked-user", "被拦截"),
+            umo=blocked_umo,
+        )
+        allowed_event = ExtractorTests._Event(
+            "aiocqhttp",
+            ExtractorTests._Sender("allowed-user", "允许通过"),
+            umo=allowed_umo,
+        )
+
+        assert await svc.resolve_event(blocked_event) is None
+        allowed = await svc.resolve_event(allowed_event)
+        assert allowed is not None
+
+        raw_config["umo_filter_mode"] = "whitelist"
+        raw_config["umo_filter_list"] = [allowed_umo]
+        assert await svc.resolve_event(blocked_event) is None
+        assert await svc.resolve_event(allowed_event) is not None
+        assert (await svc.stats())["accounts"] == 1
+        await svc.close()
+
     async def test_multi_merge_persons(self) -> None:
         svc = _service(self._tmp.name)
         # Create 3 separate persons via snapshots
@@ -228,10 +270,16 @@ class ExtractorTests(unittest.TestCase):
 
     class _Event:
         def __init__(
-            self, platform: str, sender: ExtractorTests._Sender, group_id: str = "", raw: dict | None = None
+            self,
+            platform: str,
+            sender: ExtractorTests._Sender,
+            group_id: str = "",
+            raw: dict | None = None,
+            umo: str = "",
         ) -> None:
             self._platform = platform
             self.message_obj = ExtractorTests._MessageObj(sender, group_id, raw)
+            self.unified_msg_origin = umo
 
         def get_platform_name(self) -> str:
             return self._platform

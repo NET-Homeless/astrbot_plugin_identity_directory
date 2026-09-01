@@ -51,6 +51,16 @@ class DirectoryConfig:
         self.capture_bots = bool(raw.get("capture_bots", False))
         self.inject_identity_context = bool(raw.get("inject_identity_context", True))
 
+        raw_mode = str(raw.get("umo_filter_mode", "blacklist") or "blacklist").strip().casefold()
+        self.umo_filter_mode = raw_mode if raw_mode in {"blacklist", "whitelist"} else "blacklist"
+        raw_umo_filter_list = raw.get("umo_filter_list", [])
+        if isinstance(raw_umo_filter_list, (list, tuple)):
+            self.umo_filter_list = tuple(
+                value.strip() for value in raw_umo_filter_list if isinstance(value, str) and value.strip()
+            )
+        else:
+            self.umo_filter_list = ()
+
         # This integration is opt-in so installing this plugin never changes
         # the behavior or retention volume of the separately maintained
         # Hindsight plugin.
@@ -71,6 +81,13 @@ class DirectoryConfig:
             DEFAULT_TIMEOUT_SECONDS,
             maximum=MAX_TIMEOUT_SECONDS,
         )
+
+    def is_umo_allowed(self, umo: Any) -> bool:
+        """Return whether a session UMO may use this plugin."""
+        normalized = str(umo or "").strip()
+        if self.umo_filter_mode == "whitelist":
+            return bool(normalized) and normalized in self.umo_filter_list
+        return normalized not in self.umo_filter_list
 
 
 def _positive_int(value: Any, default: int, *, maximum: int | None = None) -> int:
@@ -190,6 +207,8 @@ class DirectoryService:
     ) -> Resolution | None:
         """Extract and resolve an AstrBot event through the same public path."""
         config = self.refresh_config()
+        if not config.is_umo_allowed(getattr(event, "unified_msg_origin", "")):
+            return None
         snapshot = extract_snapshot(event)
         if snapshot is None:
             return None
