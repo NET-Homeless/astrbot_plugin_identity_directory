@@ -1,8 +1,38 @@
+[project]
+name = "astrbot_plugin_identity_directory"
+version = "0.3.0"
+description = "跨平台身份通讯录，认出同一个人。"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pyright>=1.1.390",
+    "ruff>=0.9.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "strict"
+
+[tool.pyright]
+include = [".", "core", "tests", "scripts"]
+exclude = [
+    "**/__pycache__",
+    ".venv",
+    "venv",
+    "web/node_modules",
+]
+pythonVersion = "3.12"
+
 [tool.ruff]
 target-version = "py312"
 line-length = 110
 src = ["."]
-
 [tool.ruff.lint]
 select = [
     "E",   # pycodestyle errors

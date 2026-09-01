@@ -78,7 +78,8 @@ def _group_id(event: Any, message_obj: Any) -> str | None:
 def _username(message_obj: Any, platform: str) -> str:
     raw = getattr(message_obj, "raw_message", None)
     if platform.casefold() == "rocket_chat" and isinstance(raw, dict):
-        sender = raw.get("u") if isinstance(raw.get("u"), dict) else {}
+        raw_u = raw.get("u")
+        sender = raw_u if isinstance(raw_u, dict) else {}
         return _text(sender.get("username"))
     return ""
 
@@ -97,7 +98,8 @@ def _is_bot(message_obj: Any, platform: str, username: str) -> bool:
     raw = getattr(message_obj, "raw_message", None)
     if isinstance(raw, dict):
         if platform.casefold() == "rocket_chat":
-            sender = raw.get("u") if isinstance(raw.get("u"), dict) else {}
+            raw_u = raw.get("u")
+            sender = raw_u if isinstance(raw_u, dict) else {}
             if sender.get("bot") is True:
                 return True
         if raw.get("is_bot") is True:

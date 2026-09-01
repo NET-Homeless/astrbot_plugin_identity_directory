@@ -6,6 +6,7 @@ import asyncio
 import inspect
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -278,7 +279,7 @@ class IdentityDirectory(Star):
     # ------------------------------------------------------------- #
 
     def _register_web_apis(self, context: Context) -> None:
-        routes: list[tuple[str, object, list[str], str]] = [
+        routes: list[tuple[str, Any, list[str], str]] = [
             ("/stats", self._web_api.stats, ["GET"], "Directory stats"),
             ("/repair", self._web_api.repair_unlinked, ["POST"], "Link eligible unlinked accounts"),
             ("/persons", self._web_api.list_persons, ["GET"], "List persons"),
@@ -356,7 +357,7 @@ def _temporary_text_part(text: str) -> TextPart:
         }
         for parameter in parameters.values()
     ):
-        part = TextPart(text)
+        part = TextPart(text)  # pyright: ignore[reportCallIssue]
     else:
         raise TypeError("TextPart constructor does not accept a text value")
 
@@ -364,4 +365,6 @@ def _temporary_text_part(text: str) -> TextPart:
     if not callable(mark_as_temp):
         raise TypeError("TextPart does not support mark_as_temp()")
     marked = mark_as_temp()
-    return part if marked is None else marked
+    if isinstance(marked, TextPart):
+        return marked
+    return part
