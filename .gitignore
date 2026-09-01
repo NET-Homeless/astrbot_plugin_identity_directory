@@ -8,6 +8,9 @@ web/node_modules/
 web/.tmp/
 web/.turbo/
 web/test-results/
+web/playwright-report/
+web/blob-report/
+web/.vite/
 
 # Local secrets and runtime data
 .env

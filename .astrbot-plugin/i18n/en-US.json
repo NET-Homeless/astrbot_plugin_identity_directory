@@ -1,0 +1,79 @@
+{
+  "metadata": {
+    "display_name": "Identity Directory",
+    "short_desc": "Recognize the same person across chat platforms.",
+    "desc": "A cross-platform identity directory that merges accounts and group cards into one person, with a WebUI and an identity resolution API."
+  },
+  "pages": {
+    "directory": {
+      "title": "Directory",
+      "description": "Manage contacts, platform accounts, and identity merges."
+    }
+  },
+  "config": {
+    "observe_messages": {
+      "description": "Register senders automatically",
+      "hint": "Listen to message events and register the sender's platform account. Accounts are not auto-merged into existing contacts."
+    },
+    "auto_track_display_names": {
+      "description": "Track display name changes",
+      "hint": "When a nickname or group card changes, record the new name in alias history for mention disambiguation."
+    },
+    "auto_stub_person": {
+      "description": "Create contacts automatically",
+      "hint": "Create a standalone contact when an account first speaks. Merge contacts later in the management page."
+    },
+    "capture_bots": {
+      "description": "Register bot accounts",
+      "hint": "Also register other bot accounts into the directory."
+    },
+    "inject_identity_context": {
+      "description": "Inject current identity",
+      "hint": "Temporarily add the canonical name and current display name to the LLM request. This is not written into session history."
+    },
+    "hindsight_enabled": {
+      "description": "Enable Person-scoped Hindsight memory",
+      "hint": "Call the public Hindsight API directly using a stable person_id. This does not modify or depend on astrbot_plugin_hindsight_memory."
+    },
+    "hindsight_recall_enabled": {
+      "description": "Recall Person memory",
+      "hint": "Temporarily inject memories visible to this Person within the same audience scope."
+    },
+    "hindsight_retain_enabled": {
+      "description": "Retain Person memory",
+      "hint": "Write conversations that meet the minimum length and do not contain obvious credentials into the Person scope."
+    },
+    "hindsight_cross_group_memory": {
+      "description": "Share Person memory across groups",
+      "hint": "When off, group memory is recalled only within the same platform instance and group. When on, the same Person can recall memory across DMs, groups, and platforms."
+    },
+    "hindsight_api_base": {
+      "description": "Hindsight API base URL",
+      "hint": "From Docker, host.docker.internal:8899 is typical. On macOS host, prefer 127.0.0.1 to avoid localhost IPv6 issues."
+    },
+    "hindsight_api_key": {
+      "description": "Hindsight API key",
+      "hint": "Leave empty if local authentication is disabled."
+    },
+    "hindsight_bank_id": {
+      "description": "Hindsight bank",
+      "hint": "Bank ID used for Person memory reads and writes."
+    },
+    "hindsight_recall_limit": {
+      "description": "Recall limit",
+      "hint": "Maximum number of Person memories injected per request."
+    },
+    "hindsight_item_max_chars": {
+      "description": "Max characters per memory",
+      "hint": "Truncate each memory before injection to limit prompt size."
+    },
+    "hindsight_retain_min_chars": {
+      "description": "Minimum characters to retain",
+      "hint": "Messages shorter than this are not written to Person memory."
+    },
+    "hindsight_timeout_seconds": {
+      "description": "Hindsight timeout (seconds)",
+      "hint": "Skip recall or retain after this timeout. It should not block normal delivery."
+    }
+  }
+}

@@ -68,8 +68,8 @@
   "hindsight_bank_id": {
     "description": "Hindsight Bank",
     "type": "string",
-    "hint": "Person 记忆读写使用的 Bank ID。",
-    "default": "group-mei"
+    "hint": "Person 记忆读写使用的 Bank ID。启用 Hindsight 前必须填写；留空则不召回、不写入。",
+    "default": ""
   },
   "hindsight_recall_limit": {
     "description": "单次召回条数",
@@ -90,9 +90,9 @@
     "default": 8
   },
   "hindsight_timeout_seconds": {
-    "description": "Hindsight 请求超时（秒）",
+    "description": "Hindsight 请求超时（秒，最多 3）",
     "type": "int",
-    "hint": "召回或写入超过该时间会跳过，不阻断正常消息。",
-    "default": 30
+    "hint": "召回或写入超过该时间会跳过，不阻断正常消息；允许范围为 1–3 秒。",
+    "default": 3
   }
 }

@@ -17,11 +17,6 @@ class AliasSource(StrEnum):
     MANUAL = "manual"  # entered by an operator in the UI
 
 
-class MergeStatus(StrEnum):
-    PENDING = "pending"
-    DONE = "done"
-
-
 @dataclass(frozen=True, slots=True)
 class Person:
     """A real-world human (or bot persona) — the stable identity anchor."""
@@ -88,11 +83,12 @@ class Alias:
 
 @dataclass(frozen=True, slots=True)
 class AccountView:
-    """Joined read model: account + its memberships + alias count."""
+    """Joined read model: account + contact name, memberships, and alias count."""
 
     account: Account
     memberships: tuple[Membership, ...] = ()
     alias_count: int = 0
+    person_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

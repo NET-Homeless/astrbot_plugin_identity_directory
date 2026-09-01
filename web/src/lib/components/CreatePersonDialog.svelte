@@ -19,7 +19,7 @@
   async function handleCreate() {
     if (!name.trim()) return;
     const tagArray = tags
-      .split(",")
+      .split(/[,，]/)
       .map((t) => t.trim())
       .filter((t) => t.length > 0);
 

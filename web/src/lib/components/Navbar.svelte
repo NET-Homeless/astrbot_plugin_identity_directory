@@ -38,7 +38,7 @@
         <span>刷新</span>
       </Button>
 
-      {#if directoryState.stats.unlinked_accounts > 0}
+      {#if directoryState.stats.repairable_unlinked_accounts > 0}
         <Button
           variant="secondary"
           size="sm"
@@ -46,7 +46,7 @@
           class="h-9 gap-1.5 border border-amber-500/30 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 dark:text-amber-400"
         >
           <Wrench class="h-3.5 w-3.5" />
-          <span>修复未绑定 ({directoryState.stats.unlinked_accounts})</span>
+          <span>修复未绑定 ({directoryState.stats.repairable_unlinked_accounts})</span>
         </Button>
       {/if}
 

@@ -223,6 +223,47 @@ class ServiceInvariantTests(unittest.IsolatedAsyncioTestCase):
         assert second.account.suppress_auto_stub is True
         await service.close()
 
+    async def test_deleted_person_does_not_recreate_on_next_observation(self) -> None:
+        service = self._service()
+        snapshot = SenderSnapshot(
+            platform="aiocqhttp",
+            platform_user_id="deleted-user",
+            display_name="已删除联系人",
+            platform_instance_id="qq-instance",
+        )
+        first = await service.register_snapshot(snapshot)
+        assert first is not None and first.person is not None
+        assert await service.delete_person(first.person.person_id)
+
+        second = await service.register_snapshot(snapshot)
+        assert second is not None
+        assert second.person is None
+        assert second.account.person_id is None
+        assert second.account.suppress_auto_stub is True
+        stats = await service.stats()
+        assert stats["unlinked_accounts"] == 1
+        assert stats["repairable_unlinked_accounts"] == 0
+        await service.close()
+
+    async def test_runtime_config_changes_are_applied_to_registration(self) -> None:
+        raw_config = {"auto_stub_person": False}
+        service = DirectoryService(
+            Path(self._tmp.name) / "directory.db",
+            DirectoryConfig(raw_config),
+        )
+        assert service.config.hindsight_timeout_seconds == 3
+        first = await service.register_snapshot(
+            SenderSnapshot(platform="aiocqhttp", platform_user_id="config-user-1", display_name="未建档")
+        )
+        assert first is not None and first.person is None
+
+        raw_config["auto_stub_person"] = True
+        second = await service.register_snapshot(
+            SenderSnapshot(platform="aiocqhttp", platform_user_id="config-user-2", display_name="应建档")
+        )
+        assert second is not None and second.person is not None
+        await service.close()
+
     async def test_concurrent_observations_are_serialized_to_one_account(self) -> None:
         service = self._service()
         snapshots = [

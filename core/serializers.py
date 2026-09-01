@@ -58,6 +58,7 @@ def alias_to_dict(a: Alias) -> dict:
 
 def account_view_to_dict(v: AccountView) -> dict:
     data = account_to_dict(v.account)
+    data["person_name"] = v.person_name
     data["memberships"] = [membership_to_dict(m) for m in v.memberships]
     data["alias_count"] = v.alias_count
     return data

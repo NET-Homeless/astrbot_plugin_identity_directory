@@ -1,4 +1,9 @@
 import { test, expect } from "@playwright/test";
+declare global {
+  interface Window {
+    __lastApiPost: { endpoint: string; body: unknown };
+  }
+}
 
 const LONG_PERSON_NAME =
   "咕咕嘎嘎宇宙冷漠哈基米曼波椰果奶龙豪情在天自在极意豪一生有爱何惧风飞沙飞八分钱干飞马叮咚鸡叮咚鸡大狗大狗叫叫叫";
@@ -18,7 +23,14 @@ window.AstrBotPluginPage = {
   onContext: (cb) => { window.__onContextCb = cb; return () => {}; },
   apiGet: async (endpoint, params) => {
     if (endpoint === "stats") {
-      return { persons: 4, accounts: 3, unlinked_accounts: 1, memberships: 2, aliases: 4 };
+      return {
+        persons: 4,
+        accounts: 3,
+        unlinked_accounts: 1,
+        repairable_unlinked_accounts: 1,
+        memberships: 2,
+        aliases: 4,
+      };
     }
     if (endpoint === "persons") {
       return {
@@ -85,6 +97,7 @@ window.AstrBotPluginPage = {
             platform_user_id: "100000001",
             username: "",
             person_id: "p1",
+            person_name: "测试用户A",
             first_seen: 1700000000,
             last_seen: 1700004000,
             alias_count: 2,
@@ -128,6 +141,7 @@ window.AstrBotPluginPage = {
             platform_user_id: "100000001",
             username: "",
             person_id: "p1",
+            person_name: "测试用户A",
             first_seen: 1700000000,
             last_seen: 1700004000,
             alias_count: 2,
@@ -187,6 +201,7 @@ test.describe("Identity Directory E2E", () => {
 
     // Account table is now displayed
     await expect(page.getByRole("cell", { name: "100000001" })).toBeVisible();
+    await expect(page.getByRole("cell", { name: "测试用户A" })).toBeVisible();
   });
 
   test("3. Person detail opens as a SOLID right drawer (not transparent)", async ({ page }) => {
@@ -230,10 +245,7 @@ test.describe("Identity Directory E2E", () => {
     await drawer.getByRole("button", { name: "保存修改" }).click();
 
     await expect(drawer).not.toBeVisible();
-    const postPayload = await page.evaluate(
-      () =>
-        (window as unknown as { __lastApiPost: { endpoint: string; body: unknown } }).__lastApiPost,
-    );
+    const postPayload = await page.evaluate(() => window.__lastApiPost);
     expect(postPayload).toEqual({
       endpoint: "persons/p1/update",
       body: {
@@ -266,10 +278,7 @@ test.describe("Identity Directory E2E", () => {
     await page.getByRole("alertdialog").getByRole("button", { name: "确认删除" }).click();
     await expect(drawer).not.toBeVisible();
 
-    const postPayload = await page.evaluate(
-      () =>
-        (window as unknown as { __lastApiPost: { endpoint: string; body: unknown } }).__lastApiPost,
-    );
+    const postPayload = await page.evaluate(() => window.__lastApiPost);
     expect(postPayload).toEqual({ endpoint: "persons/p1/delete", body: {} });
   });
 
@@ -317,9 +326,7 @@ test.describe("Identity Directory E2E", () => {
     await confirmBtn.click();
 
     // Verify post payload contains target_person_id and source_person_ids
-    const postPayload = await page.evaluate(
-      () => (window as unknown as { __lastApiPost: { body: unknown } }).__lastApiPost.body,
-    );
+    const postPayload = await page.evaluate(() => window.__lastApiPost.body);
     expect(postPayload).toEqual({
       target_person_id: "p1",
       source_person_ids: ["p2", "p3"],
@@ -392,9 +399,7 @@ test.describe("Identity Directory E2E", () => {
     expect(geometry.actionBottom).toBeLessThanOrEqual(geometry.viewportHeight);
 
     await confirmBtn.click();
-    const postPayload = await page.evaluate(
-      () => (window as unknown as { __lastApiPost: { body: unknown } }).__lastApiPost.body,
-    );
+    const postPayload = await page.evaluate(() => window.__lastApiPost.body);
     expect(postPayload).toEqual({
       target_person_id: "p1",
       source_person_ids: ["p4"],
@@ -412,6 +417,14 @@ test.describe("Identity Directory E2E", () => {
     expect(bg).not.toBe("transparent");
 
     await expect(page.locator("#c-name")).toBeVisible();
+    await page.locator("#c-name").fill("新联系人");
+    await page.locator("#c-tags").fill("主人，开发者");
+    await dialog.getByRole("button", { name: "立即创建" }).click();
+    const postPayload = await page.evaluate(() => window.__lastApiPost);
+    expect(postPayload).toEqual({
+      endpoint: "persons/create",
+      body: { canonical_name: "新联系人", notes: "", tags: ["主人", "开发者"] },
+    });
   });
 
   test("6. Dark mode support check: Drawer & Dialog remain solid and readable", async ({
@@ -439,5 +452,19 @@ test.describe("Identity Directory E2E", () => {
       expect(g).toBeLessThan(60);
       expect(b).toBeLessThan(60);
     }
+  });
+
+  test("7. Refreshing person details preserves unsaved form edits", async ({ page }) => {
+    await page
+      .getByRole("row", { name: /测试用户A/ })
+      .getByRole("button", { name: "编辑" })
+      .click();
+
+    const drawer = page.locator("aside[aria-label='联系人管理抽屉']");
+    await drawer.locator("#f-canonical").fill("未保存的规范名");
+    await drawer.getByPlaceholder("手动新增别名…").fill("正在编辑的别名");
+    await drawer.getByRole("button", { name: "添加" }).click();
+
+    await expect(drawer.locator("#f-canonical")).toHaveValue("未保存的规范名");
   });
 });

@@ -91,6 +91,11 @@ def _text(value: object, *, field: str) -> str:
     return result
 
 
+def _escape_like(value: str) -> str:
+    """Escape user input before embedding it in a SQLite LIKE pattern."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 class DirectoryStore:
     """Synchronous SQLite store; async callers must serialize access above it."""
 
@@ -576,6 +581,10 @@ class DirectoryStore:
             ).fetchone()[0]
             if redirect_count:
                 raise DirectoryConflictError("cannot delete a person that is the target of merge redirects")
+            self._conn.execute(
+                "UPDATE accounts SET suppress_auto_stub=1 WHERE person_id=?",
+                (canonical_id,),
+            )
             cur = self._conn.execute("DELETE FROM persons WHERE person_id=?", (canonical_id,))
             return cur.rowcount > 0
 
@@ -590,8 +599,8 @@ class DirectoryStore:
         where = [] if include_archived else ["is_archived=0"]
         params: list[object] = []
         if query:
-            where.append("(canonical_name LIKE ? OR notes LIKE ?)")
-            like = f"%{query}%"
+            where.append("(canonical_name LIKE ? ESCAPE '\\' OR notes LIKE ? ESCAPE '\\')")
+            like = f"%{_escape_like(query)}%"
             params.extend([like, like])
         clause = f"WHERE {' AND '.join(where)}" if where else ""
         total = self._conn.execute(f"SELECT COUNT(*) FROM persons {clause}", params).fetchone()[0]
@@ -611,6 +620,7 @@ class DirectoryStore:
                 account=account,
                 memberships=tuple(self.list_memberships(account.account_id)),
                 alias_count=self.count_aliases(account.account_id),
+                person_name=person.canonical_name,
             )
             for account in accounts
         )
@@ -746,19 +756,21 @@ class DirectoryStore:
             canonical_id = self._resolve_person_id(person_id)
             if canonical_id is None:
                 return "WHERE 1=0", []
-            where.append("person_id=?")
+            where.append("accounts.person_id=?")
             params.append(canonical_id)
         if unlinked:
-            where.append("person_id IS NULL")
+            where.append("accounts.person_id IS NULL")
         if platform:
-            where.append("platform=?")
+            where.append("accounts.platform=?")
             params.append(platform)
         if platform_instance_id:
-            where.append("platform_instance_id=?")
+            where.append("accounts.platform_instance_id=?")
             params.append(platform_instance_id)
         if query:
-            where.append("(platform_user_id LIKE ? OR username LIKE ?)")
-            like = f"%{query}%"
+            where.append(
+                "(accounts.platform_user_id LIKE ? ESCAPE '\\' OR accounts.username LIKE ? ESCAPE '\\')"
+            )
+            like = f"%{_escape_like(query)}%"
             params.extend([like, like])
         return (f"WHERE {' AND '.join(where)}" if where else ""), params
 
@@ -803,9 +815,11 @@ class DirectoryStore:
             platform_instance_id=platform_instance_id,
             query=query,
         )
-        total = int(self._conn.execute(f"SELECT COUNT(*) FROM accounts {clause}", params).fetchone()[0])
+        from_clause = "accounts LEFT JOIN persons ON persons.person_id = accounts.person_id"
+        total = int(self._conn.execute(f"SELECT COUNT(*) FROM {from_clause} {clause}", params).fetchone()[0])
         rows = self._conn.execute(
-            f"SELECT * FROM accounts {clause} ORDER BY last_seen DESC, account_id LIMIT ? OFFSET ?",
+            f"SELECT accounts.*, persons.canonical_name AS person_name FROM {from_clause} {clause} "
+            "ORDER BY accounts.last_seen DESC, accounts.account_id LIMIT ? OFFSET ?",
             (*params, limit, offset),
         ).fetchall()
         views = [
@@ -813,6 +827,7 @@ class DirectoryStore:
                 account=self._account_from(row),
                 memberships=tuple(self.list_memberships(row["account_id"])),
                 alias_count=self.count_aliases(row["account_id"]),
+                person_name=row["person_name"],
             )
             for row in rows
         ]
@@ -1233,6 +1248,9 @@ class DirectoryStore:
             "persons": count("persons", "WHERE is_archived=0"),
             "accounts": count("accounts"),
             "unlinked_accounts": count("accounts", "WHERE person_id IS NULL"),
+            "repairable_unlinked_accounts": count(
+                "accounts", "WHERE person_id IS NULL AND suppress_auto_stub=0"
+            ),
             "memberships": count("memberships"),
             "aliases": count("aliases"),
             "person_redirects": count("person_redirects"),

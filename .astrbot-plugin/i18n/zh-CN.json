@@ -1,0 +1,79 @@
+{
+  "metadata": {
+    "display_name": "通讯录",
+    "short_desc": "跨平台身份通讯录，认出同一个人。",
+    "desc": "跨平台身份通讯录：将各平台账号/各群名片归并为同一个人，提供 WebUI 管理与身份解析 API。"
+  },
+  "pages": {
+    "directory": {
+      "title": "通讯录",
+      "description": "管理联系人、平台账号和身份合并。"
+    }
+  },
+  "config": {
+    "observe_messages": {
+      "description": "自动登记账号",
+      "hint": "开启后，插件会监听消息事件，自动把发言者的平台账号登记进通讯录（不会自动合并到已有联系人）。"
+    },
+    "auto_track_display_names": {
+      "description": "自动追踪显示名变化",
+      "hint": "开启后，当同一账号的昵称/群名片发生变化时，自动把新名字记入该账号的显示名历史（aliases），供消息中提及消歧使用。"
+    },
+    "auto_stub_person": {
+      "description": "自动创建联系人",
+      "hint": "开启后，新账号首次发言时自动为其创建一个独立联系人（stub），之后可在管理页手动合并。关闭则只登记账号、不建联系人。"
+    },
+    "capture_bots": {
+      "description": "登记 Bot 账号",
+      "hint": "是否把其他 bot 账号也登记进通讯录。"
+    },
+    "inject_identity_context": {
+      "description": "注入当前身份",
+      "hint": "在当前 LLM 请求中临时加入规范名和当前显示名，不写入会话历史。"
+    },
+    "hindsight_enabled": {
+      "description": "启用 Person 级 Hindsight 记忆",
+      "hint": "由通讯录插件直接调用 Hindsight 公共 API，以稳定 person_id 隔离召回与写入；不会修改或依赖 astrbot_plugin_hindsight_memory。"
+    },
+    "hindsight_recall_enabled": {
+      "description": "召回 Person 记忆",
+      "hint": "启用后，在当前 LLM 请求中临时注入该 Person 在相同受众范围内的相关记忆。"
+    },
+    "hindsight_retain_enabled": {
+      "description": "写入 Person 记忆",
+      "hint": "启用后，把符合最小长度且不含明显凭据的对话写入稳定 Person 作用域。"
+    },
+    "hindsight_cross_group_memory": {
+      "description": "跨群共享 Person 记忆",
+      "hint": "关闭时，群聊记忆只在同一平台实例和群内召回；开启后，同一 Person 在私聊、其他群和其他平台都可召回。可能把一个群里的事实带到另一个群，默认关闭。"
+    },
+    "hindsight_api_base": {
+      "description": "Hindsight API 地址",
+      "hint": "Docker 内访问宿主机通常使用 http://host.docker.internal:8899；macOS 宿主机直接访问建议使用 127.0.0.1，避免 localhost 的 IPv6 转发问题。"
+    },
+    "hindsight_api_key": {
+      "description": "Hindsight API Key",
+      "hint": "本地未启用认证时可留空。"
+    },
+    "hindsight_bank_id": {
+      "description": "Hindsight Bank",
+      "hint": "Person 记忆读写使用的 Bank ID。启用 Hindsight 前必须填写；留空则不召回、不写入。"
+    },
+    "hindsight_recall_limit": {
+      "description": "单次召回条数",
+      "hint": "每次最多注入多少条 Person 记忆。"
+    },
+    "hindsight_item_max_chars": {
+      "description": "单条记忆最大字符数",
+      "hint": "注入前截断单条记忆，限制提示词体积。"
+    },
+    "hindsight_retain_min_chars": {
+      "description": "写入最小字符数",
+      "hint": "低于该长度的短消息不写入 Person 记忆。"
+    },
+    "hindsight_timeout_seconds": {
+      "description": "Hindsight 请求超时（秒，最多 3）",
+      "hint": "召回或写入超过该时间会跳过，不阻断正常消息；允许范围为 1–3 秒。"
+    }
+  }
+}

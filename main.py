@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from datetime import UTC, datetime
 from pathlib import Path
 
-from astrbot.api import logger
+from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
 from astrbot.core.agent.message import TextPart
-from astrbot.core.config import AstrBotConfig
 from astrbot.core.star.filter.custom_filter import CustomFilter
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
@@ -47,7 +47,10 @@ class PassiveIdentityCaptureFilter(CustomFilter):
 
     def filter(self, event: AstrMessageEvent, cfg: AstrBotConfig) -> bool:  # noqa: ARG002
         service = self._resolve_service()
-        if service is None or not service.config.observe_messages:
+        if service is None:
+            return False
+        service.refresh_config(cfg)
+        if not service.config.observe_messages:
             return False
         try:
             snapshot = extract_snapshot(event)
@@ -60,13 +63,13 @@ class PassiveIdentityCaptureFilter(CustomFilter):
 
 
 class IdentityDirectory(Star):
-    def __init__(self, context: Context, config: dict | None = None) -> None:
+    def __init__(self, context: Context, config: AstrBotConfig | None = None) -> None:
         super().__init__(context)
-        self._raw_config = config or {}
+        self.config = config if config is not None else {}
         db_dir = Path(get_astrbot_plugin_data_path()) / PLUGIN_NAME
-        self.directory_service = DirectoryService(db_dir / "directory.db", DirectoryConfig(self._raw_config))
+        self.directory_service = DirectoryService(db_dir / "directory.db", DirectoryConfig(self.config))
         self._memory_salt = load_or_create_salt(db_dir / "hindsight_scope_salt.txt")
-        self._memory_client: PersonMemoryClient | None = None
+        self._memory_clients: dict[tuple[str, str, str, int, int, int], PersonMemoryClient] = {}
         self._web_api = DirectoryWebApi(self.directory_service)
         self._register_web_apis(context)
 
@@ -84,8 +87,8 @@ class IdentityDirectory(Star):
         )
 
     async def terminate(self) -> None:
-        if self._memory_client is not None:
-            await self._memory_client.aclose()
+        if self._memory_clients:
+            await asyncio.gather(*(client.aclose() for client in self._memory_clients.values()))
         await self.directory_service.close()
 
     # ------------------------------------------------------------- #
@@ -103,7 +106,7 @@ class IdentityDirectory(Star):
 
     @filter.on_llm_request()
     async def _inject_identity_context(self, event: AstrMessageEvent, req: object) -> None:
-        config = self.directory_service.config
+        config = self._refresh_config()
         if not config.inject_identity_context and not self._memory_recall_enabled():
             return
         try:
@@ -153,6 +156,7 @@ class IdentityDirectory(Star):
 
     @filter.on_llm_response()
     async def _retain_person_memory(self, event: AstrMessageEvent, resp: object) -> None:
+        config = self._refresh_config()
         if not self._memory_retain_enabled():
             return
         try:
@@ -161,7 +165,7 @@ class IdentityDirectory(Star):
                 return
             resolution = await self.directory_service.resolve_event(
                 event,
-                register=self.directory_service.config.observe_messages,
+                register=config.observe_messages,
             )
             person_ids = (
                 await self.directory_service.list_person_identity_ids(resolution.person.person_id)
@@ -173,14 +177,14 @@ class IdentityDirectory(Star):
                 resolution,
                 salt=self._memory_salt,
                 person_ids=person_ids,
-                cross_group_memory=self.directory_service.config.hindsight_cross_group_memory,
+                cross_group_memory=config.hindsight_cross_group_memory,
             )
             if scope is None:
                 return
             content = build_memory_content(
                 str(getattr(event, "message_str", "") or ""),
                 str(getattr(resp, "completion_text", "") or ""),
-                min_chars=self.directory_service.config.hindsight_retain_min_chars,
+                min_chars=config.hindsight_retain_min_chars,
             )
             if content and resolution and resolution.person:
                 document_id = build_turn_document_id(
@@ -201,8 +205,11 @@ class IdentityDirectory(Star):
         except Exception:  # noqa: BLE001 — retention must not break delivery
             logger.exception("[identity-directory] failed to retain Person memory")
 
+    def _refresh_config(self) -> DirectoryConfig:
+        return self.directory_service.refresh_config(self.config)
+
     def _memory_recall_enabled(self) -> bool:
-        config = self.directory_service.config
+        config = self._refresh_config()
         return (
             config.hindsight_enabled
             and config.hindsight_recall_enabled
@@ -210,7 +217,7 @@ class IdentityDirectory(Star):
         )
 
     def _memory_retain_enabled(self) -> bool:
-        config = self.directory_service.config
+        config = self._refresh_config()
         return (
             config.hindsight_enabled
             and config.hindsight_retain_enabled
@@ -218,9 +225,18 @@ class IdentityDirectory(Star):
         )
 
     def _person_memory_client(self) -> PersonMemoryClient:
-        if self._memory_client is None:
-            config = self.directory_service.config
-            self._memory_client = PersonMemoryClient(
+        config = self._refresh_config()
+        key = (
+            config.hindsight_api_base,
+            config.hindsight_bank_id,
+            config.hindsight_api_key,
+            config.hindsight_recall_limit,
+            config.hindsight_timeout_seconds,
+            config.hindsight_item_max_chars,
+        )
+        client = self._memory_clients.get(key)
+        if client is None:
+            client = PersonMemoryClient(
                 config.hindsight_api_base,
                 config.hindsight_bank_id,
                 api_key=config.hindsight_api_key,
@@ -228,7 +244,8 @@ class IdentityDirectory(Star):
                 timeout_seconds=config.hindsight_timeout_seconds,
                 item_max_chars=config.hindsight_item_max_chars,
             )
-        return self._memory_client
+            self._memory_clients[key] = client
+        return client
 
     # ------------------------------------------------------------- #
     # commands

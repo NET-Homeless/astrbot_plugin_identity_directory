@@ -10,10 +10,10 @@ export default defineConfig({
     trace: "on-first-retry",
   },
   webServer: {
-    command: "python3 -m http.server 4173 --directory ../pages/directory",
+    command: "pnpm build && python3 -m http.server 4173 --directory ../pages/directory",
     port: 4173,
-    reuseExistingServer: !process.env.CI,
-    timeout: 5000,
+    reuseExistingServer: false,
+    timeout: 120_000,
   },
   projects: [
     {

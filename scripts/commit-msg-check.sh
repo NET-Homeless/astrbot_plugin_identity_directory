@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Conventional Commits validator for commit-msg hook
-# Enforces single-line English commit messages with type(scope): subject format
+# Enforces single-line Conventional Commit messages with type(scope): subject format
 set -euo pipefail
 
 commit_msg_file="$1"
@@ -14,7 +14,7 @@ if echo "$commit_msg" | grep -qE '^Merge (branch|pull request|remote-tracking br
     exit 0
 fi
 
-# Project convention: single-line English subject only (no body)
+# Project convention: single-line subject only (no body)
 if [ -n "$body_lines" ]; then
     echo "ERROR: Commit message must be a single line (no body)" >&2
     echo "Your message has a body after the subject line." >&2
@@ -52,10 +52,5 @@ if [ "$subject_len" -gt 72 ]; then
     echo "WARNING: Commit subject is $subject_len chars (recommended < 72)" >&2
 fi
 
-# Check for English only using POSIX character classes (macOS grep compatible)
-if printf '%s' "$commit_msg" | LC_ALL=C grep -qE '[^[:print:][:space:]]'; then
-    echo "ERROR: Commit message must be in English (non-ASCII characters detected)" >&2
-    exit 1
-fi
 
 echo "Commit message format OK"

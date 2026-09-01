@@ -8,3 +8,5 @@ peerDependencyRules:
     - vite
   allowedVersions:
     vite: "*"
+    # svelte-check 4.7.6 currently declares TypeScript ^5/^6; vp check passes on 7.x.
+    typescript: ">=7.0.0"

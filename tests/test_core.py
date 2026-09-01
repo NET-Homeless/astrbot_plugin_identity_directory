@@ -44,6 +44,9 @@ class CoreServiceTests(unittest.IsolatedAsyncioTestCase):
         assert res.membership is not None
         assert res.membership.current_card == "测试用户A"
         assert res.account.person_id == res.person.person_id
+        views, total = await svc.list_account_views()
+        assert total == 1
+        assert views[0].person_name == "测试用户A"
         await svc.close()
 
     async def test_same_account_two_groups_two_cards(self) -> None:
@@ -135,6 +138,27 @@ class CoreServiceTests(unittest.IsolatedAsyncioTestCase):
         assert len(candidates) == 2
         assert candidates[0].in_group is True
         assert candidates[0].account.platform_user_id == "u1"
+        await svc.close()
+
+    async def test_search_treats_like_wildcards_as_literal_text(self) -> None:
+        svc = _service(self._tmp.name)
+        await svc.create_person("literal%name")
+        await svc.create_person("literalXname")
+        await svc.create_person("literal_name")
+
+        percent_matches, _ = await svc.list_persons(query="%")
+        underscore_matches, _ = await svc.list_persons(query="_")
+        assert {person.canonical_name for person in percent_matches} == {"literal%name"}
+        assert {person.canonical_name for person in underscore_matches} == {"literal_name"}
+
+        await svc.register_snapshot(
+            SenderSnapshot(platform="aiocqhttp", platform_user_id="literal%user", display_name="百分号")
+        )
+        await svc.register_snapshot(
+            SenderSnapshot(platform="aiocqhttp", platform_user_id="literalXuser", display_name="普通字符")
+        )
+        account_matches = await svc.list_accounts(query="%")
+        assert {account.platform_user_id for account in account_matches} == {"literal%user"}
         await svc.close()
 
     async def test_bot_skip_when_configured(self) -> None:
@@ -240,6 +264,24 @@ class ExtractorTests(unittest.TestCase):
         assert snap is not None
         assert snap.platform_user_id == "rcABC"
         assert snap.username == "testuser"
+
+    def test_username_bot_hint_requires_token_boundary(self) -> None:
+        for index, username in enumerate(("robot", "both", "bottom")):
+            event = self._Event(
+                "rocket_chat",
+                self._Sender(f"rc-{index}", "普通用户"),
+                raw={"u": {"username": username}},
+            )
+            snapshot = extract_snapshot(event)
+            assert snapshot is not None and snapshot.is_bot is False
+
+        bot_event = self._Event(
+            "rocket_chat",
+            self._Sender("rc-bot", "机器人"),
+            raw={"u": {"username": "helper-bot"}},
+        )
+        bot_snapshot = extract_snapshot(bot_event)
+        assert bot_snapshot is not None and bot_snapshot.is_bot is True
 
     def test_missing_user_id_returns_none(self) -> None:
         event = self._Event("aiocqhttp", self._Sender("", ""))

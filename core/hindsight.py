@@ -6,6 +6,7 @@ not import, patch, or alter the separately maintained Hindsight AstrBot plugin.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import html
 import json
@@ -25,6 +26,8 @@ RECALL_TYPES = ["world", "experience", "observation"]
 DEFAULT_RECALL_LIMIT = 5
 DEFAULT_ITEM_MAX_CHARS = 360
 DEFAULT_RETAIN_MIN_CHARS = 8
+DEFAULT_TIMEOUT_SECONDS = 3
+MAX_TIMEOUT_SECONDS = 3
 
 
 class PersonMemoryError(RuntimeError):
@@ -167,7 +170,7 @@ class PersonMemoryClient:
         bank_id: str,
         *,
         api_key: str = "",
-        timeout_seconds: int = 8,
+        timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
         recall_limit: int = DEFAULT_RECALL_LIMIT,
         item_max_chars: int = DEFAULT_ITEM_MAX_CHARS,
         transport: httpx.AsyncBaseTransport | None = None,
@@ -175,7 +178,11 @@ class PersonMemoryClient:
         self.api_base = api_base.rstrip("/") + "/"
         self.bank_id = bank_id.strip()
         self.api_key = api_key.strip()
-        self.timeout = httpx.Timeout(max(1.0, float(timeout_seconds)))
+        try:
+            self.timeout_seconds = max(1.0, min(float(timeout_seconds), float(MAX_TIMEOUT_SECONDS)))
+        except (TypeError, ValueError):
+            self.timeout_seconds = float(DEFAULT_TIMEOUT_SECONDS)
+        self.timeout = httpx.Timeout(self.timeout_seconds)
         self.recall_limit = max(1, recall_limit)
         self.item_max_chars = max(1, item_max_chars)
         self._transport = transport
@@ -254,10 +261,11 @@ class PersonMemoryClient:
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         try:
-            response = await (await self._get_client()).request(method, path, **kwargs)
-            response.raise_for_status()
-            data = response.json()
-        except httpx.TimeoutException as exc:
+            async with asyncio.timeout(self.timeout_seconds):
+                response = await (await self._get_client()).request(method, path, **kwargs)
+                response.raise_for_status()
+                data = response.json()
+        except (httpx.TimeoutException, TimeoutError) as exc:
             raise PersonMemoryError("Hindsight request timed out") from exc
         except httpx.HTTPStatusError as exc:
             raise PersonMemoryError(f"Hindsight returned HTTP {exc.response.status_code}") from exc

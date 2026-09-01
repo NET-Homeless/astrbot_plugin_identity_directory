@@ -46,14 +46,14 @@ vp build
 | `auto_track_display_names` | 开 | 显示名变化时记入别名历史 |
 | `auto_stub_person` | 开 | 新账号首次发言自动建独立联系人（之后手动合并） |
 | `capture_bots` | 关 | 是否登记 bot 账号 |
-| `inject_identity_context` | 开 | 向当前 LLM 请求注入已解析的规范名、别名和备注 |
+| `inject_identity_context` | 开 | 向当前 LLM 请求注入已解析的规范名和当前显示名（不注入备注） |
 | `hindsight_enabled` | 关 | 启用本插件拥有的 Person 记忆链路；不会修改另一个 Hindsight 插件 |
 | `hindsight_recall_enabled` | 开 | 从 Hindsight 召回当前 Person 可见的记忆 |
 | `hindsight_retain_enabled` | 开 | 以结构化对话和幂等文档 ID 写入当前 Person 作用域 |
 | `hindsight_cross_group_memory` | 关 | 开启后同一 Person 可跨私聊/群/平台召回；可能造成跨群信息流动 |
 | `hindsight_api_base` | `http://host.docker.internal:8899` | Hindsight API 地址 |
-| `hindsight_bank_id` | `group-mei` | Hindsight Bank ID |
-| `hindsight_timeout_seconds` | `30` | 召回/写入超时；失败只跳过增强，不阻断消息 |
+| `hindsight_bank_id` | （空） | Hindsight Bank ID；启用前必须填写 |
+| `hindsight_timeout_seconds` | `3` | 召回/写入总超时（最多 3 秒）；失败只跳过增强，不阻断消息 |
 
 ## 指令
 
@@ -92,4 +92,4 @@ candidates = await service.find_by_name("测试用户", platform="aiocqhttp", gr
 
 ## 许可
 
-MIT
+[MIT](LICENSE)

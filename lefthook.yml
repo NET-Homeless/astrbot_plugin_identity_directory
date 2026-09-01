@@ -35,17 +35,4 @@ pre-commit:
 commit-msg:
   commands:
     commitlint:
-      run: |
-        MSG_FILE="{1}"
-        MSG=$(cat "$MSG_FILE" 2>/dev/null || echo "")
-        # Conventional Commits 校验：type(scope): description
-        # type: feat/fix/docs/style/refactor/test/chore/perf/build/ci/revert
-        PATTERN='^(feat|fix|docs|style|refactor|test|chore|perf|build|ci|revert)(\(.+\))?: [A-Za-z0-9_ ,./\(\)-]{1,}$'
-        if ! echo "$MSG" | grep -qE "$PATTERN"; then
-          echo "❌ Commit Message 校验失败"
-          echo "格式要求（全英文）：<type>(<scope>): <description>"
-          echo "允许的 type: feat | fix | docs | style | refactor | test | chore | perf | build | ci | revert"
-          echo "示例：feat(web): add merge dialog multi-select"
-          exit 1
-        fi
-        echo "✅ Commit Message 格式合规"
+      run: bash scripts/commit-msg-check.sh "{1}"

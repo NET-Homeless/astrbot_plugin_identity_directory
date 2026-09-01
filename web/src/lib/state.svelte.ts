@@ -25,6 +25,7 @@ class DirectoryState {
     persons: 0,
     accounts: 0,
     unlinked_accounts: 0,
+    repairable_unlinked_accounts: 0,
     memberships: 0,
     aliases: 0,
   });
@@ -34,7 +35,6 @@ class DirectoryState {
   isLoading = $state<boolean>(false);
   isMerging = $state<boolean>(false);
   isSaving = $state<boolean>(false);
-  errorMessage = $state<string | null>(null);
   toastMessage = $state<string | null>(null);
   toastType = $state<"success" | "error" | "info">("success");
   private toastTimer: number | null = null;
@@ -65,6 +65,7 @@ class DirectoryState {
   isDetailLoading = $state<boolean>(false);
   isDeleteOpen = $state<boolean>(false);
   isDeleting = $state<boolean>(false);
+  private detailRequestVersion = 0;
 
   // Merge Dialog State: Merging MULTIPLE selected source persons INTO the target person
   isMergeOpen = $state<boolean>(false);
@@ -140,28 +141,34 @@ class DirectoryState {
   }
 
   async openPersonDetail(personId: string) {
+    const requestVersion = ++this.detailRequestVersion;
     this.activePersonId = personId;
     this.isDetailOpen = true;
     this.isDetailLoading = true;
     try {
       const view = await apiGet<PersonView>(`persons/${personId}`);
+      if (requestVersion !== this.detailRequestVersion || this.activePersonId !== personId) return;
       this.activePersonView = view;
       // Load aliases for all linked accounts
       const aliasPromises = view.accounts.map((a) =>
         apiGet<{ items: Alias[] }>(`accounts/${a.account_id}/aliases`),
       );
       const aliasResults = await Promise.all(aliasPromises);
+      if (requestVersion !== this.detailRequestVersion || this.activePersonId !== personId) return;
       this.activePersonAliases = aliasResults.flatMap((r) => r.items);
     } catch (e: unknown) {
+      if (requestVersion !== this.detailRequestVersion) return;
       this.showToast(extractErrorMessage(e, "获取联系人详情失败"), "error");
       this.closePersonDetail();
     } finally {
-      this.isDetailLoading = false;
+      if (requestVersion === this.detailRequestVersion) this.isDetailLoading = false;
     }
   }
 
   closePersonDetail() {
+    this.detailRequestVersion += 1;
     this.isDetailOpen = false;
+    this.isDetailLoading = false;
     this.isDeleteOpen = false;
     this.activePersonId = null;
     this.activePersonView = null;

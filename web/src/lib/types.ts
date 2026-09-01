@@ -42,6 +42,7 @@ export interface Account {
 }
 
 export interface AccountView extends Account {
+  person_name: string | null;
   memberships: Membership[];
   alias_count: number;
 }
@@ -54,6 +55,7 @@ export interface DirectoryStats {
   persons: number;
   accounts: number;
   unlinked_accounts: number;
+  repairable_unlinked_accounts: number;
   memberships: number;
   aliases: number;
 }

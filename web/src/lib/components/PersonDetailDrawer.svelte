@@ -38,20 +38,32 @@
   // New alias form
   let newAliasName = $state("");
   let newAliasAccountId = $state("");
+  let initializedPersonId: string | null = null;
 
   $effect(() => {
-    if (directoryState.activePersonView) {
-      const p = directoryState.activePersonView;
-      formName = p.canonical_name;
-      formTags = (p.tags || []).join(", ");
-      formNotes = p.notes || "";
-      formIsBot = p.is_bot;
-      formIsArchived = p.is_archived;
-
-      if (p.accounts.length > 0 && !newAliasAccountId) {
-        newAliasAccountId = p.accounts[0].account_id;
-      }
+    const person = directoryState.activePersonView;
+    const activePersonId = directoryState.activePersonId;
+    if (!directoryState.isDetailOpen) {
+      initializedPersonId = null;
+      return;
     }
+    if (!person || !activePersonId || person.person_id !== activePersonId) return;
+
+    if (initializedPersonId === person.person_id) {
+      if (!person.accounts.some((account) => account.account_id === newAliasAccountId)) {
+        newAliasAccountId = person.accounts[0]?.account_id ?? "";
+      }
+      return;
+    }
+
+    initializedPersonId = person.person_id;
+    formName = person.canonical_name;
+    formTags = (person.tags || []).join(", ");
+    formNotes = person.notes || "";
+    formIsBot = person.is_bot;
+    formIsArchived = person.is_archived;
+    newAliasName = "";
+    newAliasAccountId = person.accounts[0]?.account_id ?? "";
   });
 
   function closeDrawer() {

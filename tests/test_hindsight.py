@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import unittest
 
 import httpx
 
 from core.hindsight import (
+    MAX_TIMEOUT_SECONDS,
     PersonMemoryClient,
+    PersonMemoryError,
     build_memory_content,
     build_memory_context,
     build_person_memory_scope,
@@ -153,6 +156,33 @@ class PersonMemoryScopeTests(unittest.TestCase):
 
 
 class PersonMemoryClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_timeout_is_capped(self) -> None:
+        client = PersonMemoryClient("http://hindsight.test", "bank", timeout_seconds=999)
+        assert client.timeout_seconds == MAX_TIMEOUT_SECONDS
+
+    async def test_request_timeout_aborts_slow_transport(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            await asyncio.sleep(2)
+            return httpx.Response(200, json={"results": []})
+
+        client = PersonMemoryClient(
+            "http://hindsight.test",
+            "bank",
+            timeout_seconds=1,
+            transport=httpx.MockTransport(handler),
+        )
+        scope = build_person_memory_scope(
+            SenderSnapshot(platform="aiocqhttp", platform_user_id="u", display_name="n"),
+            _resolution(),
+            salt="salt",
+        )
+        assert scope is not None
+        try:
+            with self.assertRaisesRegex(PersonMemoryError, "timed out"):
+                await client.recall("慢请求", scope)
+        finally:
+            await client.aclose()
+
     async def test_recall_uses_or_group_for_merged_ids_and_escapes_memory(self) -> None:
         captured: dict[str, object] = {}
 

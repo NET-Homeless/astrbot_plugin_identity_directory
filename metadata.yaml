@@ -2,18 +2,23 @@ name: astrbot_plugin_identity_directory
 display_name: 通讯录
 desc: 跨平台身份通讯录：将各平台账号/各群名片归并为同一个人，提供 WebUI 管理与身份解析 API。
 short_desc: 跨平台身份通讯录，认出同一个人。
-version: 0.1.0
-author: starshine
-repo: https://github.com/starshine/astrbot_plugin_identity_directory
+version: 0.2.0
+author: 星光の殲滅者
+repo: https://github.com/NET-Homeless/astrbot_plugin_identity_directory
 astrbot_version: ">=4.16,<5"
 support_platforms:
+  - rocket_chat
   - aiocqhttp
   - qq_official
   - qq_official_webhook
   - telegram
   - discord
-  - rocket_chat
-  - wechat
+  - weixin_oc
   - wecom
   - wecom_ai_bot
   - weixin_official_account
+  - webchat
+tags:
+  - 身份
+  - 通讯录
+  - 记忆

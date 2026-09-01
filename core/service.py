@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from .errors import DirectoryClosedError
 from .extractor import extract_snapshot
+from .hindsight import DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS
 from .models import (
     Account,
     AccountView,
@@ -35,37 +36,49 @@ T = TypeVar("T")
 class DirectoryConfig:
     """Typed view over the plugin configuration."""
 
-    def __init__(self, raw: dict[str, Any] | None) -> None:
-        raw = raw or {}
-        self.observe_messages: bool = bool(raw.get("observe_messages", True))
-        self.auto_track_display_names: bool = bool(raw.get("auto_track_display_names", True))
-        self.auto_stub_person: bool = bool(raw.get("auto_stub_person", True))
-        self.capture_bots: bool = bool(raw.get("capture_bots", False))
-        self.inject_identity_context: bool = bool(raw.get("inject_identity_context", True))
+    def __init__(self, raw: Mapping[str, Any] | None) -> None:
+        self._raw: Mapping[str, Any] = raw if raw is not None else {}
+        self.refresh()
+
+    def refresh(self, raw: Mapping[str, Any] | None = None) -> None:
+        """Refresh the typed values from the live plugin configuration."""
+        if raw is not None:
+            self._raw = raw
+        raw = self._raw
+        self.observe_messages = bool(raw.get("observe_messages", True))
+        self.auto_track_display_names = bool(raw.get("auto_track_display_names", True))
+        self.auto_stub_person = bool(raw.get("auto_stub_person", True))
+        self.capture_bots = bool(raw.get("capture_bots", False))
+        self.inject_identity_context = bool(raw.get("inject_identity_context", True))
 
         # This integration is opt-in so installing this plugin never changes
         # the behavior or retention volume of the separately maintained
         # Hindsight plugin.
-        self.hindsight_enabled: bool = bool(raw.get("hindsight_enabled", False))
-        self.hindsight_recall_enabled: bool = bool(raw.get("hindsight_recall_enabled", True))
-        self.hindsight_retain_enabled: bool = bool(raw.get("hindsight_retain_enabled", True))
-        self.hindsight_cross_group_memory: bool = bool(raw.get("hindsight_cross_group_memory", False))
-        self.hindsight_api_base: str = str(
+        self.hindsight_enabled = bool(raw.get("hindsight_enabled", False))
+        self.hindsight_recall_enabled = bool(raw.get("hindsight_recall_enabled", True))
+        self.hindsight_retain_enabled = bool(raw.get("hindsight_retain_enabled", True))
+        self.hindsight_cross_group_memory = bool(raw.get("hindsight_cross_group_memory", False))
+        self.hindsight_api_base = str(
             raw.get("hindsight_api_base", "http://host.docker.internal:8899") or ""
         ).strip()
-        self.hindsight_api_key: str = str(raw.get("hindsight_api_key", "") or "").strip()
-        self.hindsight_bank_id: str = str(raw.get("hindsight_bank_id", "group-mei") or "").strip()
-        self.hindsight_recall_limit: int = _positive_int(raw.get("hindsight_recall_limit"), 5)
-        self.hindsight_item_max_chars: int = _positive_int(raw.get("hindsight_item_max_chars"), 360)
-        self.hindsight_retain_min_chars: int = _positive_int(raw.get("hindsight_retain_min_chars"), 8)
-        self.hindsight_timeout_seconds: int = _positive_int(raw.get("hindsight_timeout_seconds"), 30)
+        self.hindsight_api_key = str(raw.get("hindsight_api_key", "") or "").strip()
+        self.hindsight_bank_id = str(raw.get("hindsight_bank_id", "") or "").strip()
+        self.hindsight_recall_limit = _positive_int(raw.get("hindsight_recall_limit"), 5)
+        self.hindsight_item_max_chars = _positive_int(raw.get("hindsight_item_max_chars"), 360)
+        self.hindsight_retain_min_chars = _positive_int(raw.get("hindsight_retain_min_chars"), 8)
+        self.hindsight_timeout_seconds = _positive_int(
+            raw.get("hindsight_timeout_seconds"),
+            DEFAULT_TIMEOUT_SECONDS,
+            maximum=MAX_TIMEOUT_SECONDS,
+        )
 
 
-def _positive_int(value: Any, default: int) -> int:
+def _positive_int(value: Any, default: int, *, maximum: int | None = None) -> int:
     try:
-        return max(1, int(value))
+        result = max(1, int(value))
     except (TypeError, ValueError):
-        return default
+        result = max(1, default)
+    return min(result, maximum) if maximum is not None else result
 
 
 class DirectoryService:
@@ -81,6 +94,11 @@ class DirectoryService:
         self._accepting_observations = True
         self._closed = False
         self.config = config
+
+    def refresh_config(self, raw: Mapping[str, Any] | None = None) -> DirectoryConfig:
+        """Refresh configuration, including changes made while running."""
+        self.config.refresh(raw)
+        return self.config
 
     async def _run(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         if self._closed:
@@ -147,7 +165,8 @@ class DirectoryService:
 
     async def register_snapshot(self, snapshot: SenderSnapshot) -> Resolution | None:
         """Atomically record an observation and resolve its current person."""
-        if snapshot.is_bot and not self.config.capture_bots:
+        config = self.refresh_config()
+        if snapshot.is_bot and not config.capture_bots:
             return None
         platform_instance_id = snapshot.platform_instance_id.strip() or snapshot.platform.strip()
         return await self._run(
@@ -159,8 +178,8 @@ class DirectoryService:
             display_name=snapshot.display_name,
             group_id=snapshot.group_id,
             is_bot=snapshot.is_bot,
-            auto_track_display_names=self.config.auto_track_display_names,
-            auto_stub_person=self.config.auto_stub_person,
+            auto_track_display_names=config.auto_track_display_names,
+            auto_stub_person=config.auto_stub_person,
         )
 
     async def resolve_event(
@@ -170,10 +189,11 @@ class DirectoryService:
         register: bool | None = None,
     ) -> Resolution | None:
         """Extract and resolve an AstrBot event through the same public path."""
+        config = self.refresh_config()
         snapshot = extract_snapshot(event)
         if snapshot is None:
             return None
-        should_register = self.config.observe_messages if register is None else register
+        should_register = config.observe_messages if register is None else register
         if should_register:
             return await self.register_snapshot(snapshot)
         return await self.resolve_sender(

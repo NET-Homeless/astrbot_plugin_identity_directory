@@ -9,6 +9,7 @@ Adapter-specific quirks live here and nowhere else:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .models import SenderSnapshot
@@ -103,7 +104,8 @@ def _is_bot(message_obj: Any, platform: str, username: str) -> bool:
             return True
 
     lowered = username.casefold()
-    return bool(lowered and any(hint in lowered for hint in _GENERIC_BOT_HINTS))
+    tokens = {token for token in re.split(r"[^a-z0-9]+", lowered) if token}
+    return bool(tokens.intersection(_GENERIC_BOT_HINTS))
 
 
 def _call_event_value(obj: Any, method_name: str) -> str:

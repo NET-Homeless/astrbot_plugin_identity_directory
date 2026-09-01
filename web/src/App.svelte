@@ -12,11 +12,15 @@
   import { Tabs, TabsList, TabsTrigger, TabsContent } from "$lib/components/ui/tabs";
   import { Users, KeyRound, CheckCircle2, AlertCircle, Info } from "lucide-svelte";
 
+  function applyTheme(isDark: boolean) {
+    const root = document.documentElement;
+    root.dataset.theme = isDark ? "dark" : "light";
+    root.classList.toggle("dark", isDark);
+  }
+
   onMount(() => {
     initBridge().then((ctx) => {
-      if (ctx.isDark) {
-        document.documentElement.classList.add("dark");
-      }
+      applyTheme(Boolean(ctx.isDark));
       directoryState.refreshAll();
     });
 
@@ -24,11 +28,7 @@
       return window.AstrBotPluginPage.onContext(() => {
         const ctx = window.AstrBotPluginPage?.getContext();
         if (ctx) {
-          if (ctx.isDark) {
-            document.documentElement.classList.add("dark");
-          } else {
-            document.documentElement.classList.remove("dark");
-          }
+          applyTheme(Boolean(ctx.isDark));
         }
       });
     }

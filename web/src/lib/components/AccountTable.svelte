@@ -209,8 +209,9 @@
                     type="button"
                     onclick={() => directoryState.openPersonDetail(account.person_id!)}
                     class="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline truncate max-w-[140px]"
+                    title={account.person_name || "查看关联联系人"}
                   >
-                    <span>查看关联联系人</span>
+                    <span class="truncate">{account.person_name || "查看关联联系人"}</span>
                     <ExternalLink class="h-3 w-3 shrink-0" />
                   </button>
                 {:else}
