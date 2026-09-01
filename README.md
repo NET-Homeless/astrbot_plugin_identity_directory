@@ -72,8 +72,8 @@ if plugin and plugin.star_cls:
         platform_instance_id="bot-account-1",
     )
     if resolution and resolution.person:
-        name = resolution.person.canonical_name   # 规范名，跨平台稳定
-        pid  = resolution.person.person_id         # 稳定身份 ID，用于记忆 tag
+        name = resolution.person.canonical_name  # 规范名，跨平台稳定
+        pid = resolution.person.person_id  # 稳定身份 ID，用于记忆 tag
 ```
 
 按显示名查人（提及消歧，群作用域优先）：
