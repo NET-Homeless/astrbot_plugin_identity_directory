@@ -17,7 +17,6 @@ support_platforms:
   - wecom
   - wecom_ai_bot
   - weixin_official_account
-  - webchat
 tags:
   - 身份
   - 通讯录
