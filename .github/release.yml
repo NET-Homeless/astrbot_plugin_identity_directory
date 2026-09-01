@@ -1,0 +1,30 @@
+changelog:
+  categories:
+    - title: "🚀 Features / 新特性"
+      labels:
+        - "feature"
+        - "enhancement"
+        - "feat"
+    - title: "🐛 Bug Fixes / 问题修复"
+      labels:
+        - "fix"
+        - "bug"
+        - "bugfix"
+    - title: "⚡ Performance / 性能优化"
+      labels:
+        - "perf"
+        - "performance"
+    - title: "♻️ Refactoring / 代码重构"
+      labels:
+        - "refactor"
+    - title: "📝 Documentation / 文档变更"
+      labels:
+        - "docs"
+        - "documentation"
+    - title: "🔧 Maintenance / 工程与构建"
+      labels:
+        - "chore"
+        - "ci"
+        - "build"
+        - "deps"
+        - "dependencies"
