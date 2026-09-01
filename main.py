@@ -283,6 +283,111 @@ class IdentityDirectory(Star):
             f"（{snapshot.platform}:{snapshot.platform_user_id}，共绑定 {account_count} 个账号）。"
         )
 
+    @filter.command("directory", alias={"通讯录", "通讯录状态", "通讯录统计"})
+    async def directory_stats(self, event: AstrMessageEvent, sub_cmd: str = ""):  # noqa: ARG002
+        """查看通讯录统计信息。用法: /directory"""
+        config = self._refresh_config()
+        if not config.is_umo_allowed(getattr(event, "unified_msg_origin", "")):
+            return
+        stats = await self.directory_service.stats()
+        yield event.plain_result(
+            "📊 通讯录统计数据：\n"
+            f"• 联系人总数：{stats.get('persons', 0)} 人\n"
+            f"• 关联账号数：{stats.get('accounts', 0)} 个（未归并：{stats.get('unlinked_accounts', 0)}）\n"
+            f"• 历史别名数：{stats.get('aliases', 0)} 条\n"
+            f"• 群名片记录：{stats.get('memberships', 0)} 张"
+        )
+
+    @filter.command("lookup", alias={"查人", "查找联系人"})
+    async def lookup_person(self, event: AstrMessageEvent, name: str = ""):
+        """按显示名或群名片查找联系人。用法: /lookup <名字>"""
+        config = self._refresh_config()
+        if not config.is_umo_allowed(getattr(event, "unified_msg_origin", "")):
+            return
+        query_name = name.strip()
+        if not query_name:
+            yield event.plain_result("请提供要查询的名字或群名片。用法: /lookup <名字>")
+            return
+
+        snapshot = extract_snapshot(event)
+        platform = snapshot.platform if snapshot else ""
+        group_id = snapshot.group_id if snapshot else None
+
+        candidates = await self.directory_service.find_by_name(
+            query_name,
+            platform=platform,
+            group_id=group_id,
+        )
+        if not candidates:
+            yield event.plain_result(f"未在通讯录中找到与“{query_name}”相关的联系人。")
+            return
+
+        lines = [f"🔍 找到 {len(candidates)} 位相关联系人："]
+        for i, cand in enumerate(candidates[:5], 1):
+            person = cand.person
+            account = cand.account
+            scope_text = "本群成员" if cand.in_group else "全局匹配"
+            lines.append(
+                f"{i}. 【{person.canonical_name}】（{scope_text}，匹配名: {cand.matched_name}）\n"
+                f"   账号: {account.platform}:{account.platform_user_id}"
+            )
+        yield event.plain_result("\n".join(lines))
+
+    @filter.command("link", alias={"bind", "绑定", "关联账号"})
+    async def link_account_cmd(self, event: AstrMessageEvent, code: str = ""):
+        """跨平台自助关联绑定账号。用法: /link (申请) 或 /link <6位绑定码>"""
+        config = self._refresh_config()
+        if not config.is_umo_allowed(getattr(event, "unified_msg_origin", "")):
+            return
+        snapshot = extract_snapshot(event)
+        if snapshot is None:
+            yield event.plain_result("无法识别当前账号。")
+            return
+
+        action_arg = code.strip().upper()
+        # Case 1: 申请生成绑定码
+        if not action_arg or action_arg in {"CODE", "NEW", "申请", "GET"}:
+            resolution = await self.directory_service.resolve_event(
+                event,
+                register=True,
+            )
+            if resolution is None or resolution.person is None:
+                yield event.plain_result("无法为当前账号创建联系人主体，请先发送一条普通消息。")
+                return
+            person = resolution.person
+            ticket = self.directory_service.create_binding_ticket(
+                person_id=person.person_id,
+                person_name=person.canonical_name,
+                creator_platform=snapshot.platform,
+                creator_user_id=snapshot.platform_user_id,
+                ttl_seconds=600,
+            )
+            yield event.plain_result(
+                f"🔑 跨平台绑定码已生成：【{ticket.code}】\n"
+                "• 有效时间：10 分钟\n"
+                f"• 绑定主体：【{person.canonical_name}】\n"
+                f"• 发起账号：{snapshot.platform}:{snapshot.platform_user_id}\n\n"
+                f"👉 请在另一个平台（如 QQ 或 Rocket.Chat）中向机器人发送：/link {ticket.code}\n"
+                "即可将两个账号合并为同一个人，共享跨平台身份与记忆！"
+            )
+            return
+
+        # Case 2: 输入绑定码完成核销
+        success, message, merged_person = await self.directory_service.redeem_binding_ticket(
+            code=action_arg,
+            target_snapshot=snapshot,
+        )
+        if not success:
+            yield event.plain_result(f"❌ 绑定失败：{message}")
+            return
+
+        p_name = merged_person.canonical_name if merged_person else "统一联系人"
+        yield event.plain_result(
+            f"🎉 跨平台账号绑定成功！\n"
+            f"当前账号（{snapshot.platform}:{snapshot.platform_user_id}）已成功归并至【{p_name}】名下。\n"
+            "现在你在不同平台上的身份、名片与记忆已完全互通共享！"
+        )
+
     # ------------------------------------------------------------- #
     # web api registration
     # ------------------------------------------------------------- #
