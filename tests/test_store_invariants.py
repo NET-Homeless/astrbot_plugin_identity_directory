@@ -44,7 +44,7 @@ class StoreMigrationTests(unittest.TestCase):
             assert account.person_id == "person-1"
             assert store.list_memberships("account-1")[0].current_card == "群名片"
             assert store.list_aliases("account-1")[0].name == "群名片"
-            assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 3
+            assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 4
             assert store._conn.execute("PRAGMA foreign_key_check").fetchall() == []
             store.close()
 
@@ -54,7 +54,7 @@ class StoreMigrationTests(unittest.TestCase):
             DirectoryStore(db_path).close()
             conn = sqlite3.connect(db_path)
             conn.executemany(
-                "INSERT INTO persons VALUES(?,?,?,?,?,?,?,?)",
+                "INSERT INTO persons(person_id, canonical_name, notes, tags, is_bot, is_archived, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?)",
                 [
                     ("person-legacy", "人工整理姓名", "保留备注", "", 0, 0, 1.0, 2.0),
                     ("person-stub", "新群名片", "", "", 0, 0, 5.0, 6.0),
@@ -162,8 +162,24 @@ class StoreMigrationTests(unittest.TestCase):
                 "workspace-a",
                 "workspace-b",
             }
-            assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 3
+            assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 4
             assert store._conn.execute("PRAGMA foreign_key_check").fetchall() == []
+            store.close()
+
+    def test_v4_self_persona_crud(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "directory.db"
+            store = DirectoryStore(db_path)
+            p = store.create_person("测试用户", self_persona="全栈开发者")
+            assert p.self_persona == "全栈开发者"
+
+            fetched = store.get_person(p.person_id)
+            assert fetched is not None
+            assert fetched.self_persona == "全栈开发者"
+
+            updated = store.update_person(p.person_id, self_persona="软路由与AI爱好者")
+            assert updated is not None
+            assert updated.self_persona == "软路由与AI爱好者"
             store.close()
 
 

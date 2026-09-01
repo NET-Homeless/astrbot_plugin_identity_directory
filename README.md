@@ -49,7 +49,7 @@ vp build
 | `auto_stub_person` | 开 | 新账号首次发言自动建独立联系人（之后手动合并） |
 | `capture_bots` | 关 | 是否登记 bot 账号 |
 | `inject_identity_context` | 开 | 向当前 LLM 请求注入已解析的规范名和当前显示名（不注入备注） |
-| `hindsight_enabled` | 关 | 启用本插件拥有的 Person 记忆链路；不会修改另一个 Hindsight 插件 |
+| `allow_self_persona` | 开 | 是否允许普通成员使用 `/自我画像` 指令查询自己的画像卡片 |
 | `hindsight_recall_enabled` | 开 | 从 Hindsight 召回当前 Person 可见的记忆 |
 | `hindsight_retain_enabled` | 开 | 以结构化对话和幂等文档 ID 写入当前 Person 作用域 |
 | `hindsight_cross_group_memory` | 关 | 开启后同一 Person 可跨私聊/群/平台召回；可能造成跨群信息流动 |
@@ -59,7 +59,14 @@ vp build
 
 ## 指令
 
-- `/whoami`（`/我是谁`）— 显示当前账号在通讯录里的身份。
+| 英文指令 | 中文别名 | 权限 | 说明 |
+|---|---|---|---|
+| `/whoami` | `/我是谁` | 全员 | 显示当前账号在通讯录里的身份与绑定账号总数 |
+| `/directory` | `/通讯录` | 全员 | 查看通讯录联系人、关联账号、别名与名片统计数据 |
+| `/lookup <名字>` | `/查人 <名字>` | 全员 | 按显示名或群名片搜索联系人及关联账号（群作用域优先消歧） |
+| `/link [绑定码]` | `/绑定 [绑定码]` | 全员 | 跨平台自助绑定：发送 `/link` 申请 10 分钟绑定码；在另一平台发送 `/link <码>` 完成合并 |
+| `/persona [名字/ID]` | `/画像 [名字/ID]` | **管理员** | 查看指定联系人的完整画像、关联账号与长期记忆（含内部备注与全局记忆） |
+| `/self_persona` | `/自我画像` | 全员（可配置） | 查看自己在通讯录中的个人画像与记忆（受 `allow_self_persona` 开关控制） |
 
 ## 其他插件调用
 

@@ -25,7 +25,8 @@ from .core.hindsight import (
     build_turn_document_id,
     load_or_create_salt,
 )
-from .core.prompt import build_identity_context
+from .core.models import Account, Person, Resolution, SenderSnapshot
+from .core.prompt import build_identity_context, render_persona_card
 from .core.service import DirectoryConfig, DirectoryService
 from .core.webapi import DirectoryWebApi
 
@@ -282,6 +283,279 @@ class IdentityDirectory(Star):
             f"你是【{person.canonical_name}】"
             f"（{snapshot.platform}:{snapshot.platform_user_id}，共绑定 {account_count} 个账号）。"
         )
+
+    @filter.command("directory", alias={"通讯录"})
+    async def directory_stats(self, event: AstrMessageEvent, sub_cmd: str = ""):  # noqa: ARG002
+        """查看通讯录统计信息。用法: /directory"""
+        config = self._refresh_config()
+        if not config.is_umo_allowed(getattr(event, "unified_msg_origin", "")):
+            return
+        stats = await self.directory_service.stats()
+        yield event.plain_result(
+            "📊 通讯录统计数据：\n"
+            f"• 联系人总数：{stats.get('persons', 0)} 人\n"
+            f"• 关联账号数：{stats.get('accounts', 0)} 个（未归并：{stats.get('unlinked_accounts', 0)}）\n"
+            f"• 历史别名数：{stats.get('aliases', 0)} 条\n"
+            f"• 群名片记录：{stats.get('memberships', 0)} 张"
+        )
+
+    @filter.command("lookup", alias={"查人"})
+    async def lookup_person(self, event: AstrMessageEvent, name: str = ""):
+        """按显示名或群名片查找联系人。用法: /lookup <名字>"""
+        config = self._refresh_config()
+        if not config.is_umo_allowed(getattr(event, "unified_msg_origin", "")):
+            return
+        query_name = name.strip()
+        if not query_name:
+            yield event.plain_result("请提供要查询的名字或群名片。用法: /lookup <名字>")
+            return
+
+        snapshot = extract_snapshot(event)
+        platform = snapshot.platform if snapshot else ""
+        group_id = snapshot.group_id if snapshot else None
+
+        candidates = await self.directory_service.find_by_name(
+            query_name,
+            platform=platform,
+            group_id=group_id,
+        )
+        if not candidates:
+            yield event.plain_result(f"未在通讯录中找到与“{query_name}”相关的联系人。")
+            return
+
+        lines = [f"🔍 找到 {len(candidates)} 位相关联系人："]
+        for i, cand in enumerate(candidates[:5], 1):
+            person = cand.person
+            account = cand.account
+            scope_text = "本群成员" if cand.in_group else "全局匹配"
+            lines.append(
+                f"{i}. 【{person.canonical_name}】（{scope_text}，匹配名: {cand.matched_name}）\n"
+                f"   账号: {account.platform}:{account.platform_user_id}"
+            )
+        yield event.plain_result("\n".join(lines))
+
+    @filter.command("link", alias={"绑定"})
+    async def link_account_cmd(self, event: AstrMessageEvent, code: str = ""):
+        """跨平台自助关联绑定账号。用法: /link (申请) 或 /link <6位绑定码>"""
+        config = self._refresh_config()
+        if not config.is_umo_allowed(getattr(event, "unified_msg_origin", "")):
+            return
+        snapshot = extract_snapshot(event)
+        if snapshot is None:
+            yield event.plain_result("无法识别当前账号。")
+            return
+
+        action_arg = code.strip().upper()
+        # Case 1: 申请生成绑定码
+        if not action_arg or action_arg in {"CODE", "NEW", "申请", "GET"}:
+            resolution = await self.directory_service.resolve_event(
+                event,
+                register=True,
+            )
+            if resolution is None or resolution.person is None:
+                yield event.plain_result("无法为当前账号创建联系人主体，请先发送一条普通消息。")
+                return
+            person = resolution.person
+            ticket = self.directory_service.create_binding_ticket(
+                person_id=person.person_id,
+                person_name=person.canonical_name,
+                creator_platform=snapshot.platform,
+                creator_user_id=snapshot.platform_user_id,
+                ttl_seconds=600,
+            )
+            yield event.plain_result(
+                f"🔑 跨平台绑定码已生成：【{ticket.code}】\n"
+                "• 有效时间：10 分钟\n"
+                f"• 绑定主体：【{person.canonical_name}】\n"
+                f"• 发起账号：{snapshot.platform}:{snapshot.platform_user_id}\n\n"
+                f"👉 请在另一个平台（如 QQ 或 Rocket.Chat）中向机器人发送：/link {ticket.code}\n"
+                "即可将两个账号合并为同一个人，共享跨平台身份与记忆！"
+            )
+            return
+
+        # Case 2: 输入绑定码完成核销
+        success, message, merged_person = await self.directory_service.redeem_binding_ticket(
+            code=action_arg,
+            target_snapshot=snapshot,
+        )
+        if not success:
+            yield event.plain_result(f"❌ 绑定失败：{message}")
+            return
+
+        p_name = merged_person.canonical_name if merged_person else "统一联系人"
+        yield event.plain_result(
+            f"🎉 跨平台账号绑定成功！\n"
+            f"当前账号（{snapshot.platform}:{snapshot.platform_user_id}）已成功归并至【{p_name}】名下。\n"
+            "现在你在不同平台上的身份、名片与记忆已完全互通共享！"
+        )
+
+    @filter.command("persona", alias={"画像"})
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def persona_cmd(self, event: AstrMessageEvent, target: str = ""):
+        """查看指定联系人的完整画像（管理员专属）。用法: /persona [名字/ID]"""
+        config = self._refresh_config()
+        if not config.is_umo_allowed(getattr(event, "unified_msg_origin", "")):
+            return
+
+        target_name = target.strip()
+        target_person: Person | None = None
+        target_snapshot = extract_snapshot(event)
+
+        if not target_name:
+            if target_snapshot is None:
+                yield event.plain_result("无法识别当前账号。")
+                return
+            resolution = await self.directory_service.resolve_event(event, register=True)
+            if resolution is None or resolution.person is None:
+                yield event.plain_result(
+                    f"通讯录里尚未收录该账号（{target_snapshot.platform}:{target_snapshot.platform_user_id}）。"
+                )
+                return
+            target_person = resolution.person
+        else:
+            platform = target_snapshot.platform if target_snapshot else ""
+            group_id = target_snapshot.group_id if target_snapshot else None
+
+            view = await self.directory_service.get_person_view(target_name)
+            if view is not None:
+                target_person = view.person
+            else:
+                candidates = await self.directory_service.find_by_name(
+                    target_name,
+                    platform=platform,
+                    group_id=group_id,
+                )
+                if not candidates:
+                    yield event.plain_result(f"未在通讯录中找到与“{target_name}”相关的联系人。")
+                    return
+                target_person = candidates[0].person
+
+        view = await self.directory_service.get_person_view(target_person.person_id)
+        if view is None:
+            yield event.plain_result("获取联系人画像失败。")
+            return
+
+        memories: list[str] = []
+        if config.hindsight_enabled and config.hindsight_recall_enabled:
+            try:
+                client = self._person_memory_client()
+                person_ids = await self.directory_service.list_person_identity_ids(target_person.person_id)
+                scope = build_person_memory_scope(
+                    target_snapshot
+                    if target_snapshot is not None
+                    else SenderSnapshot("system", "admin", "admin"),
+                    Resolution(
+                        Account("", "", target_person.person_id, "admin", "admin"),
+                        target_person,
+                        None,
+                        False,
+                    ),
+                    salt=self._memory_salt,
+                    person_ids=person_ids,
+                    cross_group_memory=True,
+                )
+                if scope is not None:
+                    recalled_text = await client.recall("关于该用户的偏好与关键信息", scope)
+                    if recalled_text.strip():
+                        memories = [recalled_text.strip()]
+            except Exception:
+                logger.exception("[identity-directory] persona memory recall failed")
+        card_text = render_persona_card(view, is_admin=True, memories=memories)
+        yield event.plain_result(card_text)
+
+    @filter.command("self_persona", alias={"自我画像"})
+    async def self_persona_cmd(self, event: AstrMessageEvent, content: str = ""):
+        """查看或更新自己在通讯录中的个人画像。用法: /self_persona [画像内容]"""
+        config = self._refresh_config()
+        if not config.is_umo_allowed(getattr(event, "unified_msg_origin", "")):
+            return
+
+        if not config.allow_self_persona:
+            yield event.plain_result("⚠️ 自我画像功能当前已被管理员关闭。")
+            return
+
+        snapshot = extract_snapshot(event)
+        if snapshot is None:
+            yield event.plain_result("无法识别当前账号。")
+            return
+
+        resolution = await self.directory_service.resolve_event(event, register=True)
+        if resolution is None or resolution.person is None:
+            yield event.plain_result(
+                f"通讯录里还没有你的记录（{snapshot.platform}:{snapshot.platform_user_id}）。"
+            )
+            return
+
+        target_person = resolution.person
+        view = await self.directory_service.get_person_view(target_person.person_id)
+        if view is None:
+            yield event.plain_result("获取联系人信息失败。")
+            return
+        new_persona_text = content.strip()
+        # Case: 写模式（更新/覆盖自我设定）
+        if new_persona_text:
+            updated_person = await self.directory_service.update_person(
+                target_person.person_id,
+                self_persona=new_persona_text,
+            )
+            if updated_person is None:
+                yield event.plain_result("❌ 更新自我画像失败。")
+                return
+
+            # 若启用 Hindsight，同步写入一条自我设定记忆
+            if config.hindsight_enabled and config.hindsight_retain_enabled:
+                try:
+                    client = self._person_memory_client()
+                    person_ids = await self.directory_service.list_person_identity_ids(
+                        target_person.person_id
+                    )
+                    scope = build_person_memory_scope(
+                        snapshot,
+                        resolution,
+                        salt=self._memory_salt,
+                        person_ids=person_ids,
+                        cross_group_memory=config.hindsight_cross_group_memory,
+                    )
+                    if scope is not None:
+                        await client.retain(
+                            content=f"用户【{target_person.canonical_name}】的自我画像设定：{new_persona_text}",
+                            scope=scope,
+                            document_id=f"self-persona-{target_person.person_id}",
+                            context="用户通过 /自我画像 指令更新了个人设定",
+                            entity_name=target_person.canonical_name,
+                        )
+                except Exception:
+                    logger.exception("[identity-directory] self_persona memory retain failed")
+
+            yield event.plain_result(
+                f"✨ 自我画像已成功更新！\n"
+                f"• 设定内容：{new_persona_text}\n"
+                "💡 机器人已记下你的设定，在后续对话与记忆交互中将结合此设定。"
+            )
+            return
+
+        # Case: 读模式（查看当前画像）
+
+        memories: list[str] = []
+        if config.hindsight_enabled and config.hindsight_recall_enabled:
+            try:
+                client = self._person_memory_client()
+                person_ids = await self.directory_service.list_person_identity_ids(target_person.person_id)
+                scope = build_person_memory_scope(
+                    snapshot,
+                    resolution,
+                    salt=self._memory_salt,
+                    person_ids=person_ids,
+                    cross_group_memory=config.hindsight_cross_group_memory,
+                )
+                if scope is not None:
+                    recalled_text = await client.recall("关于我的偏好与关键信息", scope)
+                    if recalled_text.strip():
+                        memories = [recalled_text.strip()]
+            except Exception:
+                logger.exception("[identity-directory] self_persona memory recall failed")
+        card_text = render_persona_card(view, is_admin=False, memories=memories)
+        yield event.plain_result(card_text)
 
     # ------------------------------------------------------------- #
     # web api registration

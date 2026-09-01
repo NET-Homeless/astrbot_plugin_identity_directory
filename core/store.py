@@ -27,7 +27,7 @@ from .models import (
     Resolution,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS persons (
@@ -135,6 +135,8 @@ class DirectoryStore:
             self._migrate_to_v2()
         if current < 3:
             self._migrate_to_v3()
+        if current < 4:
+            self._migrate_to_v4()
 
     def _migrate_to_v3(self) -> None:
         """Merge legacy fallback-instance accounts into a real platform instance.
@@ -158,6 +160,14 @@ class DirectoryStore:
             for row in rows:
                 self._merge_account_rows(str(row["legacy_id"]), str(row["current_id"]))
             self._conn.execute("PRAGMA user_version=3")
+
+    def _migrate_to_v4(self) -> None:
+        """Add self_persona column to persons table."""
+        with self._transaction():
+            columns = {row[1] for row in self._conn.execute("PRAGMA table_info(persons)").fetchall()}
+            if "self_persona" not in columns:
+                self._conn.execute("ALTER TABLE persons ADD COLUMN self_persona TEXT NOT NULL DEFAULT ''")
+            self._conn.execute("PRAGMA user_version=4")
 
     def _merge_account_rows(self, source_account_id: str, target_account_id: str) -> None:
         """Move all source relations into target, then delete the source account."""
@@ -392,6 +402,7 @@ class DirectoryStore:
     @staticmethod
     def _person_from(row: sqlite3.Row) -> Person:
         tags = tuple(tag for tag in str(row["tags"] or "").split(",") if tag)
+        self_persona = str(row["self_persona"] or "")
         return Person(
             person_id=row["person_id"],
             canonical_name=row["canonical_name"],
@@ -401,6 +412,7 @@ class DirectoryStore:
             is_archived=bool(row["is_archived"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            self_persona=self_persona,
         )
 
     @staticmethod
@@ -474,6 +486,7 @@ class DirectoryStore:
         notes: str = "",
         tags: Iterable[str] = (),
         is_bot: bool = False,
+        self_persona: str = "",
     ) -> Person:
         name = _text(canonical_name, field="canonical_name")
         now = time.time()
@@ -485,10 +498,11 @@ class DirectoryStore:
             is_bot=is_bot,
             created_at=now,
             updated_at=now,
+            self_persona=self_persona,
         )
         self._conn.execute(
             "INSERT INTO persons(person_id, canonical_name, notes, tags, is_bot,"
-            " is_archived, created_at, updated_at) VALUES(?,?,?,?,?,0,?,?)",
+            " is_archived, created_at, updated_at, self_persona) VALUES(?,?,?,?,?,0,?,?,?)",
             (
                 person.person_id,
                 person.canonical_name,
@@ -497,6 +511,7 @@ class DirectoryStore:
                 int(person.is_bot),
                 person.created_at,
                 person.updated_at,
+                person.self_persona,
             ),
         )
         return person
@@ -508,9 +523,12 @@ class DirectoryStore:
         notes: str = "",
         tags: Iterable[str] = (),
         is_bot: bool = False,
+        self_persona: str = "",
     ) -> Person:
         with self._transaction():
-            return self._create_person(canonical_name, notes=notes, tags=tags, is_bot=is_bot)
+            return self._create_person(
+                canonical_name, notes=notes, tags=tags, is_bot=is_bot, self_persona=self_persona
+            )
 
     def update_person(
         self,
@@ -521,6 +539,7 @@ class DirectoryStore:
         tags: Iterable[str] | None = None,
         is_bot: bool | None = None,
         is_archived: bool | None = None,
+        self_persona: str | None = None,
     ) -> Person | None:
         with self._transaction():
             canonical_id = self._resolve_person_id(person_id)
@@ -534,10 +553,11 @@ class DirectoryStore:
             new_tags = tuple(tags) if tags is not None else current.tags
             new_bot = is_bot if is_bot is not None else current.is_bot
             new_archived = is_archived if is_archived is not None else current.is_archived
+            new_persona = self_persona if self_persona is not None else current.self_persona
             now = time.time()
             self._conn.execute(
                 "UPDATE persons SET canonical_name=?, notes=?, tags=?, is_bot=?,"
-                " is_archived=?, updated_at=? WHERE person_id=?",
+                " is_archived=?, updated_at=?, self_persona=? WHERE person_id=?",
                 (
                     _text(new_name, field="canonical_name"),
                     new_notes,
@@ -545,6 +565,7 @@ class DirectoryStore:
                     int(new_bot),
                     int(new_archived),
                     now,
+                    new_persona,
                     canonical_id,
                 ),
             )

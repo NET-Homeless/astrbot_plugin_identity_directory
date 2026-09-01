@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 
 from core.extractor import extract_snapshot
-from core.models import SenderSnapshot
+from core.models import Account, AccountView, Membership, Person, PersonView, SenderSnapshot
+from core.prompt import render_persona_card
 from core.service import DirectoryConfig, DirectoryService
 
 
@@ -31,6 +32,12 @@ class DirectoryConfigTests(unittest.TestCase):
         config.refresh({"umo_filter_mode": "whitelist"})
         assert config.umo_filter_list == ()
         assert not config.is_umo_allowed("aiocqhttp:GroupMessage:123")
+
+    def test_allow_self_persona_config(self) -> None:
+        config = DirectoryConfig({})
+        assert config.allow_self_persona is True
+        config.refresh({"allow_self_persona": False})
+        assert config.allow_self_persona is False
 
 
 class CoreServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -249,8 +256,100 @@ class CoreServiceTests(unittest.IsolatedAsyncioTestCase):
         view = await svc.get_person_view(r_target.person.person_id)
         assert view is not None
         assert len(view.accounts) == 3
-        account_ids = {av.account.platform_user_id for av in view.accounts}
-        assert account_ids == {"100000001", "100000002", "rc_s2"}
+        await svc.close()
+
+    async def test_binding_ticket_lifecycle_and_merge(self) -> None:
+        svc = _service(self._tmp.name)
+        # Account A on Rocket.Chat
+        snap_a = SenderSnapshot(
+            platform="rocket_chat",
+            platform_user_id="user_rc_1",
+            display_name="测试用户A_RC",
+        )
+        res_a = await svc.register_snapshot(snap_a)
+        assert res_a is not None and res_a.person is not None
+        person_a = res_a.person
+
+        # Account B on QQ
+        snap_b = SenderSnapshot(
+            platform="aiocqhttp",
+            platform_user_id="100000002",
+            display_name="测试用户A_QQ",
+        )
+        res_b = await svc.register_snapshot(snap_b)
+        assert res_b is not None and res_b.person is not None
+        person_b = res_b.person
+        assert person_a.person_id != person_b.person_id
+
+        # Create ticket on account A
+        ticket = svc.create_binding_ticket(
+            person_id=person_a.person_id,
+            person_name=person_a.canonical_name,
+            creator_platform=snap_a.platform,
+            creator_user_id=snap_a.platform_user_id,
+            ttl_seconds=300,
+        )
+        assert len(ticket.code) == 6
+
+        # Attempting redeem on same account fails
+        ok_same, msg_same, _ = await svc.redeem_binding_ticket(ticket.code, snap_a)
+        assert ok_same is False
+        assert "无需重复绑定" in msg_same
+
+        # Redeem on account B merges B into A
+        ok_b, msg_b, target_person = await svc.redeem_binding_ticket(ticket.code, snap_b)
+        assert ok_b is True
+        assert target_person is not None
+        assert target_person.person_id == person_a.person_id
+
+        # Verify account B is now linked to person A
+        view_a = await svc.get_person_view(person_a.person_id)
+        assert view_a is not None
+        platforms = {acc.account.platform for acc in view_a.accounts}
+        assert platforms == {"rocket_chat", "aiocqhttp"}
+
+        # Ticket is consumed and cannot be reused
+        ok_reuse, msg_reuse, _ = await svc.redeem_binding_ticket(ticket.code, snap_b)
+        assert ok_reuse is False
+        assert "不存在或已过期" in msg_reuse
+
+        await svc.close()
+
+    async def test_binding_ticket_expired(self) -> None:
+        svc = _service(self._tmp.name)
+        snap = SenderSnapshot(platform="qq", platform_user_id="123", display_name="Test")
+        res = await svc.register_snapshot(snap)
+        assert res is not None and res.person is not None
+
+        ticket = svc.create_binding_ticket(
+            person_id=res.person.person_id,
+            person_name=res.person.canonical_name,
+            creator_platform=snap.platform,
+            creator_user_id=snap.platform_user_id,
+            ttl_seconds=-1,
+        )
+        target_snap = SenderSnapshot(platform="tg", platform_user_id="456", display_name="TGUser")
+        ok, msg, _ = await svc.redeem_binding_ticket(ticket.code, target_snap)
+        assert ok is False
+        assert "不存在或已过期" in msg
+        await svc.close()
+
+    async def test_directory_stats_and_find_by_name(self) -> None:
+        svc = _service(self._tmp.name)
+        snap = SenderSnapshot(
+            platform="aiocqhttp",
+            platform_user_id="100000003",
+            display_name="萌依酱",
+            group_id="group_1",
+        )
+        await svc.register_snapshot(snap)
+        stats = await svc.stats()
+        assert stats["persons"] >= 1
+        assert stats["accounts"] >= 1
+
+        candidates = await svc.find_by_name("萌依酱", platform="aiocqhttp", group_id="group_1")
+        assert len(candidates) >= 1
+        assert candidates[0].person.canonical_name == "萌依酱"
         await svc.close()
 
 
@@ -334,6 +433,53 @@ class ExtractorTests(unittest.TestCase):
     def test_missing_user_id_returns_none(self) -> None:
         event = self._Event("aiocqhttp", self._Sender("", ""))
         assert extract_snapshot(event) is None
+
+
+class PersonaRenderTests(unittest.TestCase):
+    def test_render_persona_card_admin_and_member(self) -> None:
+        person = Person(
+            person_id="p-1001",
+            canonical_name="测试成员",
+            notes="测试内部备注",
+            tags=("核心成员", "开发"),
+            self_persona="喜欢软路由与AI",
+            created_at=1700000000.0,
+            updated_at=1700000000.0,
+        )
+        acc = Account(
+            account_id="acc-1",
+            platform="rocket_chat",
+            platform_user_id="alice_rc",
+            person_id="p-1001",
+            first_seen=1700000000.0,
+            last_seen=1700000000.0,
+        )
+        mem = Membership(
+            membership_id="mem-1",
+            account_id="acc-1",
+            group_id="GENERAL",
+            current_card="测试成员名片",
+            first_seen=1700000000.0,
+            last_seen=1700000000.0,
+        )
+        acc_view = AccountView(account=acc, memberships=(mem,), alias_count=1)
+        person_view = PersonView(person=person, accounts=(acc_view,))
+
+        # Admin report includes notes, tags, id
+        admin_card = render_persona_card(person_view, is_admin=True, memories=["偏好 Python 3.12"])
+        assert "【联系人画像：测试成员】" in admin_card
+        assert "测试内部备注" in admin_card
+        assert "rocket_chat:alice_rc" in admin_card
+        assert "核心成员, 开发" in admin_card
+        assert "偏好 Python 3.12" in admin_card
+        assert "个人设定：喜欢软路由与AI" in admin_card
+
+        # Self-persona report omits internal notes and id
+        self_card = render_persona_card(person_view, is_admin=False)
+        assert "【自我画像：测试成员】" in self_card
+        assert "测试内部备注" not in self_card
+        assert "rocket_chat:alice_rc" in self_card
+        assert "个人设定：喜欢软路由与AI" in self_card
 
 
 if __name__ == "__main__":

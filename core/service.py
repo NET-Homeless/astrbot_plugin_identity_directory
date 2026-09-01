@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import secrets
+import time
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from .errors import DirectoryClosedError
@@ -33,6 +36,16 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+@dataclass(frozen=True, slots=True)
+class BindingTicket:
+    code: str
+    person_id: str
+    person_name: str
+    creator_platform: str
+    creator_user_id: str
+    expires_at: float
+
+
 class DirectoryConfig:
     """Typed view over the plugin configuration."""
 
@@ -50,7 +63,7 @@ class DirectoryConfig:
         self.auto_stub_person = bool(raw.get("auto_stub_person", True))
         self.capture_bots = bool(raw.get("capture_bots", False))
         self.inject_identity_context = bool(raw.get("inject_identity_context", True))
-
+        self.allow_self_persona = bool(raw.get("allow_self_persona", True))
         raw_mode = str(raw.get("umo_filter_mode", "blacklist") or "blacklist").strip().casefold()
         self.umo_filter_mode = raw_mode if raw_mode in {"blacklist", "whitelist"} else "blacklist"
         raw_umo_filter_list = raw.get("umo_filter_list", [])
@@ -110,6 +123,7 @@ class DirectoryService:
         self._pending_observations: set[asyncio.Task[None]] = set()
         self._accepting_observations = True
         self._closed = False
+        self._binding_tickets: dict[str, BindingTicket] = {}
         self.config = config
 
     def refresh_config(self, raw: Mapping[str, Any] | None = None) -> DirectoryConfig:
@@ -485,3 +499,73 @@ class DirectoryService:
             return self._store.get_person(account.person_id)
 
         return await self._run(_work)
+
+    def create_binding_ticket(
+        self,
+        person_id: str,
+        person_name: str,
+        creator_platform: str,
+        creator_user_id: str,
+        ttl_seconds: int = 600,
+    ) -> BindingTicket:
+        """Generate a random 6-character short code for cross-platform binding."""
+        now = time.time()
+        self._binding_tickets = {c: t for c, t in self._binding_tickets.items() if t.expires_at > now}
+        while True:
+            code = secrets.token_hex(3).upper()
+            if code not in self._binding_tickets:
+                break
+
+        ticket = BindingTicket(
+            code=code,
+            person_id=person_id,
+            person_name=person_name,
+            creator_platform=creator_platform,
+            creator_user_id=creator_user_id,
+            expires_at=now + ttl_seconds,
+        )
+        self._binding_tickets[code] = ticket
+        return ticket
+
+    async def redeem_binding_ticket(
+        self,
+        code: str,
+        target_snapshot: SenderSnapshot,
+    ) -> tuple[bool, str, Person | None]:
+        """Redeem a binding ticket and merge/link the target sender into the ticket's person."""
+        now = time.time()
+        normalized_code = code.strip().upper()
+        ticket = self._binding_tickets.get(normalized_code)
+        if ticket is None or ticket.expires_at <= now:
+            if ticket is not None:
+                self._binding_tickets.pop(normalized_code, None)
+            return False, "绑定码不存在或已过期，请重新申请。", None
+
+        if (
+            target_snapshot.platform.casefold() == ticket.creator_platform.casefold()
+            and target_snapshot.platform_user_id == ticket.creator_user_id
+        ):
+            return False, "当前账号即为绑定码发起账号，无需重复绑定。", None
+
+        target_resolution = await self.register_snapshot(target_snapshot)
+        if target_resolution is None:
+            return False, "当前账号注册失败，无法完成绑定。", None
+
+        target_person = target_resolution.person
+        source_account = target_resolution.account
+
+        if target_person is not None and target_person.person_id != ticket.person_id:
+            merged = await self.merge_persons(
+                source_person_id=target_person.person_id,
+                target_person_id=ticket.person_id,
+            )
+            if not merged:
+                return False, "合并联系人主体失败。", None
+        elif source_account is not None and source_account.person_id != ticket.person_id:
+            linked = await self.link_account(source_account.account_id, ticket.person_id)
+            if not linked:
+                return False, "关联账号至目标联系人失败。", None
+
+        self._binding_tickets.pop(normalized_code, None)
+        target_person_obj = await self._run(self._store.get_person, ticket.person_id)
+        return True, "绑定成功", target_person_obj
