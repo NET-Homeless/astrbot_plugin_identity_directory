@@ -1,6 +1,6 @@
 [project]
 name = "astrbot_plugin_identity_directory"
-version = "0.4.3"
+version = "0.4.4"
 description = "跨平台身份通讯录，认出同一个人。"
 readme = "README.md"
 requires-python = ">=3.12"
