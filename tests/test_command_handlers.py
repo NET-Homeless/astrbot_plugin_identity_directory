@@ -13,6 +13,8 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import patch
 
+import tests._stubs  # noqa: F401
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 PACKAGE_NAME = "identity_directory_command_test"
 

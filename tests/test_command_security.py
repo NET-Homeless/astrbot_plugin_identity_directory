@@ -9,6 +9,8 @@ from pathlib import Path
 
 from astrbot.core.star.filter.command import CommandFilter, GreedyStr
 
+import tests._stubs  # noqa: F401
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
 
