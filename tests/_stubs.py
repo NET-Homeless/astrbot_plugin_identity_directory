@@ -60,8 +60,19 @@ def install_astrbot_stubs() -> None:
         ADMIN = "ADMIN"
         USER = "USER"
 
-    class _FilterModule:
+    class _FilterMeta(type):
+        def __getattr__(cls, name: str) -> Any:
+            if name == "PermissionType":
+                return PermissionType
+            return lambda *args, **kwargs: lambda fn: fn
+
+    class _FilterModule(metaclass=_FilterMeta):
         PermissionType: Any = None
+
+        def __getattr__(self, name: str) -> Any:
+            if name == "PermissionType":
+                return PermissionType
+            return lambda *args, **kwargs: lambda fn: fn
 
         @staticmethod
         def command(*args: Any, **kwargs: Any) -> Callable[[Any], Any]:
@@ -70,6 +81,11 @@ def install_astrbot_stubs() -> None:
 
         @staticmethod
         def permission_type(*args: Any, **kwargs: Any) -> Callable[[Any], Any]:
+            _ = (args, kwargs)
+            return lambda fn: fn
+
+        @staticmethod
+        def custom_filter(*args: Any, **kwargs: Any) -> Callable[[Any], Any]:
             _ = (args, kwargs)
             return lambda fn: fn
 
