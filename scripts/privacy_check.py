@@ -74,7 +74,7 @@ ALLOWLIST_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
     ),
     "secret_value": (
         re.compile(
-            r"(?ix)^(?:\$\{[^}]+\}|<[^>]+>|"
+            r"(?ix)^(?:\$\{\{[^}]+\}\}|\$\{[^}]+\}|<[^>]+>|"
             r"(?:sk-)?(?:test|example|dummy|fake|mock|sample|placeholder|"
             r"redacted|masked|secret(?:[-_ ]?value)?|changeme)"
             r"(?:[-_.][a-z0-9]+)*)$"
@@ -132,7 +132,7 @@ TOKEN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 
 def _allowlisted(kind: str, value: str) -> bool:
-    candidate = value.strip().strip("\\\"'`.,;:)]}")
+    candidate = value.strip().strip("\"'`")
     return any(pattern.fullmatch(candidate) for pattern in ALLOWLIST_PATTERNS.get(kind, ()))
 
 
