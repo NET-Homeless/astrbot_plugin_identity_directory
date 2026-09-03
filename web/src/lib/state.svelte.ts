@@ -71,7 +71,10 @@ class DirectoryState {
   isDeleteOpen = $state<boolean>(false);
   isDeleting = $state<boolean>(false);
   private detailRequestVersion = 0;
-
+  private personRequestVersion = 0;
+  private accountRequestVersion = 0;
+  private mergeSearchVersion = 0;
+  private linkSearchVersion = 0;
   // Merge Dialog State: Merging MULTIPLE selected source persons INTO the target person
   isMergeOpen = $state<boolean>(false);
   mergeTarget = $state<PersonView | null>(null); // The surviving target (current active person)
@@ -163,6 +166,7 @@ class DirectoryState {
   }
 
   async loadPersons() {
+    const version = ++this.personRequestVersion;
     const offset = (this.personPage - 1) * this.personPageSize;
     const res = await this.fetchQuery(
       () =>
@@ -178,11 +182,14 @@ class DirectoryState {
         errorMsg: "加载联系人失败",
       },
     );
-    this.persons = res.items;
-    this.personTotal = res.total;
+    if (version === this.personRequestVersion) {
+      this.persons = res.items;
+      this.personTotal = res.total;
+    }
   }
 
   async loadAccounts() {
+    const version = ++this.accountRequestVersion;
     const offset = (this.accountPage - 1) * this.accountPageSize;
     const res = await this.fetchQuery(
       () =>
@@ -200,8 +207,10 @@ class DirectoryState {
         errorMsg: "加载账号列表失败",
       },
     );
-    this.accounts = res.items;
-    this.accountTotal = res.total;
+    if (version === this.accountRequestVersion) {
+      this.accounts = res.items;
+      this.accountTotal = res.total;
+    }
   }
 
   async openPersonDetail(personId: string) {
@@ -322,6 +331,7 @@ class DirectoryState {
   }
 
   async searchMergeCandidates(query: string) {
+    const version = ++this.mergeSearchVersion;
     this.mergeSearchQuery = query;
     const res = await this.fetchQuery(
       () =>
@@ -332,7 +342,9 @@ class DirectoryState {
       { total: 0, items: [] },
       { silent: true },
     );
-    this.mergeCandidates = res.items.filter((p) => p.person_id !== this.mergeTarget?.person_id);
+    if (version === this.mergeSearchVersion) {
+      this.mergeCandidates = res.items.filter((p) => p.person_id !== this.mergeTarget?.person_id);
+    }
   }
 
   toggleMergeSource(person: Person) {
@@ -385,6 +397,7 @@ class DirectoryState {
   }
 
   async searchLinkTargets(query: string) {
+    const version = ++this.linkSearchVersion;
     if (!query.trim()) {
       this.linkCandidates = [];
       return;
@@ -398,7 +411,9 @@ class DirectoryState {
       { total: 0, items: [] },
       { silent: true },
     );
-    this.linkCandidates = res.items;
+    if (version === this.linkSearchVersion) {
+      this.linkCandidates = res.items;
+    }
   }
 
   async linkAccountToPerson(personId: string) {

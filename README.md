@@ -51,6 +51,7 @@ vp build
 | `inject_identity_context` | 开 | 向当前 LLM 请求注入已解析的规范名、当前显示名和联系人画像，不写入会话历史。 |
 | `allow_self_persona` | 开 | 是否允许成员在私聊或群聊中查看或更新自己的画像；群聊查询仅显示公开画像内容。 |
 | `allow_member_lookup` | 关 | 是否允许普通成员在群聊中查询**当前平台实例的本群成员**；结果不会显示账号 ID。关闭时仅管理员可查询。 |
+| `hindsight_enabled` | 关 | Hindsight 记忆总开关；开启后方可根据 Person 作用域向 Hindsight 召回和写入记忆 |
 | `hindsight_recall_enabled` | 开 | 从 Hindsight 召回当前 Person 可见的记忆 |
 | `hindsight_retain_enabled` | 开 | 以结构化对话和幂等文档 ID 写入当前 Person 作用域 |
 | `hindsight_cross_group_memory` | 关 | 开启后同一 Person 可跨私聊/群/平台召回；可能造成跨群信息流动 |

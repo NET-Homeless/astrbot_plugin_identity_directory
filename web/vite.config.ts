@@ -27,5 +27,20 @@ export default defineConfig({
       },
     },
   },
-  plugins: lazyPlugins(() => [tailwindcss(), svelte()]),
+  plugins: lazyPlugins(() => [
+    tailwindcss(),
+    svelte(),
+    {
+      name: "inject-bridge-sdk",
+      transformIndexHtml() {
+        return [
+          {
+            tag: "script",
+            attrs: { src: "/api/plugin/page/bridge-sdk.js" },
+            injectTo: "head-prepend" as const,
+          },
+        ];
+      },
+    },
+  ]),
 });

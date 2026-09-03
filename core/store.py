@@ -113,6 +113,27 @@ class DirectoryStore:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._migrate()
+        self._ensure_indexes()
+
+    def _ensure_indexes(self) -> None:
+        tables = {
+            row[0]
+            for row in self._conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        if "accounts" in tables:
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_person ON accounts(person_id)")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_last_seen ON accounts(last_seen)")
+        if "persons" in tables:
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_persons_updated ON persons(updated_at)")
+        if "memberships" in tables:
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_memberships_group ON memberships(group_id)")
+        if "aliases" in tables:
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_aliases_name ON aliases(name)")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_aliases_account ON aliases(account_id)")
+        if "person_redirects" in tables:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_person_redirects_target ON person_redirects(target_person_id)"
+            )
 
     def close(self) -> None:
         self._conn.close()
@@ -951,13 +972,19 @@ class DirectoryStore:
                     )
                 person = self._get_person(canonical_id) if canonical_id else None
 
+            effective_name = display_name or username
             if person is None and auto_stub_person and not is_bot and not account.suppress_auto_stub:
-                person = self._create_person(display_name or username or user_id, is_bot=False)
+                person = self._create_person(effective_name or user_id, is_bot=False)
                 self._conn.execute(
                     "UPDATE accounts SET person_id=?, suppress_auto_stub=0 WHERE account_id=?",
                     (person.person_id, account.account_id),
                 )
-
+            elif person is not None and effective_name and person.canonical_name == account.platform_user_id:
+                self._conn.execute(
+                    "UPDATE persons SET canonical_name=?, updated_at=? WHERE person_id=?",
+                    (effective_name, time.time(), person.person_id),
+                )
+                person = self._get_person(person.person_id)
             refreshed_account = self._get_account(account.account_id) or account
             return Resolution(
                 account=refreshed_account,
@@ -1201,7 +1228,7 @@ class DirectoryStore:
         name = str(name or "").strip()
         if not name:
             return []
-        where = ["a.name=?", "a.platform=account.platform"]
+        where = ["a.name=? COLLATE NOCASE", "a.platform=account.platform"]
         params: list[object] = [name]
         if platform:
             where.append("account.platform=?")
@@ -1209,14 +1236,18 @@ class DirectoryStore:
         if platform_instance_id:
             where.append("account.platform_instance_id=?")
             params.append(platform_instance_id)
+        exact_case = "CASE WHEN a.name=? THEN 0 ELSE 1 END"
         if group_id is None:
-            ordering = "CASE WHEN a.group_id IS NULL THEN 0 ELSE 1 END, a.last_seen DESC, a.alias_id"
+            ordering = (
+                f"{exact_case}, CASE WHEN a.group_id IS NULL THEN 0 ELSE 1 END, a.last_seen DESC, a.alias_id"
+            )
+            params.append(name)
         else:
             ordering = (
-                "CASE WHEN a.group_id=? THEN 0 WHEN a.group_id IS NULL THEN 1 ELSE 2 END, "
+                f"{exact_case}, CASE WHEN a.group_id=? THEN 0 WHEN a.group_id IS NULL THEN 1 ELSE 2 END, "
                 "a.last_seen DESC, a.alias_id"
             )
-            params.append(group_id)
+            params.extend([name, group_id])
         rows = self._conn.execute(
             "SELECT a.* FROM aliases a JOIN accounts account ON account.account_id=a.account_id "
             f"WHERE {' AND '.join(where)} ORDER BY {ordering}",

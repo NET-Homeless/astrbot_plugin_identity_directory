@@ -361,7 +361,7 @@ class DirectoryService:
 
             persons, _ = self._store.list_persons(query=name, limit=20)
             for person in persons:
-                if person.person_id in seen or person.canonical_name != name:
+                if person.person_id in seen or person.canonical_name.casefold() != name.casefold():
                     continue
                 accounts = self._store.list_accounts(
                     person_id=person.person_id,

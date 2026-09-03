@@ -76,11 +76,32 @@ def _group_id(event: Any, message_obj: Any) -> str | None:
 
 
 def _username(message_obj: Any, platform: str) -> str:
+    sender = getattr(message_obj, "sender", None)
+    if sender is not None:
+        val = _text(getattr(sender, "username", None))
+        if val:
+            return val
     raw = getattr(message_obj, "raw_message", None)
-    if platform.casefold() == "rocket_chat" and isinstance(raw, dict):
-        raw_u = raw.get("u")
-        sender = raw_u if isinstance(raw_u, dict) else {}
-        return _text(sender.get("username"))
+    if isinstance(raw, dict):
+        if platform.casefold() == "rocket_chat":
+            raw_u = raw.get("u")
+            sender_dict = raw_u if isinstance(raw_u, dict) else {}
+            val = _text(sender_dict.get("username"))
+            if val:
+                return val
+        raw_from = raw.get("from")
+        if isinstance(raw_from, dict):
+            val = _text(raw_from.get("username"))
+            if val:
+                return val
+        raw_author = raw.get("author")
+        if isinstance(raw_author, dict):
+            val = _text(raw_author.get("username"))
+            if val:
+                return val
+        val = _text(raw.get("username"))
+        if val:
+            return val
     return ""
 
 
@@ -95,14 +116,24 @@ def _display_name(sender: Any) -> str:
 
 
 def _is_bot(message_obj: Any, platform: str, username: str) -> bool:
+    sender = getattr(message_obj, "sender", None)
+    if sender is not None and getattr(sender, "is_bot", False) is True:
+        return True
+
     raw = getattr(message_obj, "raw_message", None)
     if isinstance(raw, dict):
         if platform.casefold() == "rocket_chat":
             raw_u = raw.get("u")
-            sender = raw_u if isinstance(raw_u, dict) else {}
-            if sender.get("bot") is True:
+            sender_dict = raw_u if isinstance(raw_u, dict) else {}
+            if sender_dict.get("bot") is True:
                 return True
         if raw.get("is_bot") is True:
+            return True
+        raw_from = raw.get("from")
+        if isinstance(raw_from, dict) and raw_from.get("is_bot") is True:
+            return True
+        raw_author = raw.get("author")
+        if isinstance(raw_author, dict) and raw_author.get("bot") is True:
             return True
 
     lowered = username.casefold()

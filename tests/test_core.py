@@ -684,6 +684,94 @@ class PersonaRenderTests(unittest.TestCase):
         assert context is not None
         assert "user_persona: 喜欢软路由与AI" in context
 
+    def test_build_identity_context_preserves_long_persona(self) -> None:
+        long_notes = "长画像描述" * 30  # 150 chars, let's make it 300 chars
+        person = Person(person_id="p-1002", canonical_name="长画像用户", notes=long_notes)
+        account = Account(
+            account_id="acc-2",
+            platform="aiocqhttp",
+            platform_user_id="100000001",
+            person_id=person.person_id,
+        )
+        context = build_identity_context(
+            SenderSnapshot(
+                platform="aiocqhttp",
+                platform_user_id="100000001",
+                display_name="群名片",
+            ),
+            Resolution(account=account, person=person, membership=None, created=False),
+        )
+        assert context is not None
+        assert f"user_persona: {long_notes}" in context
+
+
+class AsyncCoreFixTests(unittest.IsolatedAsyncioTestCase):
+    async def test_find_by_name_is_case_insensitive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = _service(tmp)
+            res = await svc.register_snapshot(
+                SenderSnapshot(platform="aiocqhttp", platform_user_id="100000002", display_name="Alice")
+            )
+            assert res is not None
+            matches_lower = await svc.find_by_name("alice")
+            matches_upper = await svc.find_by_name("ALICE")
+            matches_exact = await svc.find_by_name("Alice")
+            assert len(matches_lower) == 1
+            assert len(matches_upper) == 1
+            assert len(matches_exact) == 1
+            assert matches_lower[0].matched_name == "Alice"
+            await svc.close()
+
+    async def test_register_observation_auto_upgrades_fallback_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = _service(tmp)
+            first = await svc.register_snapshot(
+                SenderSnapshot(platform="aiocqhttp", platform_user_id="100000003", display_name="")
+            )
+            assert first is not None and first.person is not None
+            assert first.person.canonical_name == "100000003"
+
+            second = await svc.register_snapshot(
+                SenderSnapshot(platform="aiocqhttp", platform_user_id="100000003", display_name="新昵称")
+            )
+            assert second is not None and second.person is not None
+            assert second.person.canonical_name == "新昵称"
+            await svc.close()
+
+    def test_extractor_telegram_and_discord_support(self) -> None:
+        from core.extractor import extract_snapshot
+
+        class _Msg:
+            def __init__(self, sender, raw_message):
+                self.sender = sender
+                self.raw_message = raw_message
+
+        class _Ev:
+            def __init__(self, msg, platform):
+                self.message_obj = msg
+                self._platform = platform
+
+            def get_platform_name(self):
+                return self._platform
+
+        # Telegram sender with username & bot
+        tg_sender = type("Sender", (), {"user_id": "100000004", "nickname": "TG用户"})()
+        tg_raw = {"from": {"id": 100000004, "username": "alice_tg", "is_bot": True}}
+        tg_event = _Ev(_Msg(tg_sender, tg_raw), "telegram")
+        snap_tg = extract_snapshot(tg_event)
+        assert snap_tg is not None
+        assert snap_tg.username == "alice_tg"
+        assert snap_tg.is_bot is True
+
+        # Discord sender with author username & bot
+        dc_sender = type("Sender", (), {"user_id": "100000005", "nickname": "DC用户"})()
+        dc_raw = {"author": {"id": 100000005, "username": "bob_dc", "bot": True}}
+        dc_event = _Ev(_Msg(dc_sender, dc_raw), "discord")
+        snap_dc = extract_snapshot(dc_event)
+        assert snap_dc is not None
+        assert snap_dc.username == "bob_dc"
+        assert snap_dc.is_bot is True
+
 
 if __name__ == "__main__":
     unittest.main()
