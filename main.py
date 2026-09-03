@@ -38,14 +38,23 @@ _MAX_SELF_PERSONA_CHARS = 500
 class PassiveIdentityCaptureFilter(CustomFilter):
     """Register senders without waking the message pipeline."""
 
-    @staticmethod
-    def _resolve_service() -> DirectoryService | None:
+    _cached_service: DirectoryService | None = None
+
+    @classmethod
+    def set_service(cls, service: DirectoryService | None) -> None:
+        cls._cached_service = service
+
+    @classmethod
+    def _resolve_service(cls) -> DirectoryService | None:
+        if cls._cached_service is not None and not cls._cached_service._closed:
+            return cls._cached_service
         from astrbot.core.star.star import star_map
 
         for metadata in star_map.values():
             candidate = getattr(metadata, "star_cls", metadata)
             service = getattr(candidate, "directory_service", None)
-            if isinstance(service, DirectoryService):
+            if isinstance(service, DirectoryService) and not service._closed:
+                cls._cached_service = service
                 return service
         return None
 
@@ -76,8 +85,10 @@ class IdentityDirectory(Star):
         self.directory_service = DirectoryService(db_dir / "directory.db", DirectoryConfig(self.config))
         self._memory_salt = load_or_create_salt(db_dir / "hindsight_scope_salt.txt")
         self._memory_clients: dict[tuple[str, str, str, int, int, int], PersonMemoryClient] = {}
+        self._pending_retains: set[asyncio.Task[None]] = set()
         self._web_api = DirectoryWebApi(self.directory_service)
         self._register_web_apis(context)
+        PassiveIdentityCaptureFilter.set_service(self.directory_service)
 
     # ------------------------------------------------------------- #
     # lifecycle
@@ -93,6 +104,9 @@ class IdentityDirectory(Star):
         )
 
     async def terminate(self) -> None:
+        PassiveIdentityCaptureFilter.set_service(None)
+        if self._pending_retains:
+            await asyncio.gather(*self._pending_retains, return_exceptions=True)
         if self._memory_clients:
             await asyncio.gather(*(client.aclose() for client in self._memory_clients.values()))
         await self.directory_service.close()
@@ -202,17 +216,47 @@ class IdentityDirectory(Star):
                     source_message_id=_event_message_id(event),
                     content=content,
                 )
-                await self._person_memory_client().retain(
-                    content,
-                    scope,
-                    document_id=document_id,
-                    context=build_memory_context(snapshot, resolution),
-                    timestamp=_event_timestamp(event),
-                    entity_name=resolution.person.canonical_name,
+                loop = asyncio.get_running_loop()
+                retain_task = loop.create_task(
+                    self._do_retain_memory(
+                        client=self._person_memory_client(),
+                        content=content,
+                        scope=scope,
+                        document_id=document_id,
+                        context=build_memory_context(snapshot, resolution),
+                        timestamp=_event_timestamp(event),
+                        entity_name=resolution.person.canonical_name,
+                    )
                 )
+                self._pending_retains.add(retain_task)
+                retain_task.add_done_callback(self._pending_retains.discard)
+        except Exception:  # noqa: BLE001 — retention must not break delivery
+            logger.exception("[identity-directory] failed to retain Person memory")
+
+    async def _do_retain_memory(
+        self,
+        client: PersonMemoryClient,
+        content: str,
+        scope: Any,
+        document_id: str,
+        context: str,
+        timestamp: str | None,
+        entity_name: str,
+    ) -> None:
+        try:
+            await client.retain(
+                content,
+                scope,
+                document_id=document_id,
+                context=context,
+                timestamp=timestamp,
+                entity_name=entity_name,
+            )
         except PersonMemoryError as exc:
             logger.warning("[identity-directory] Person memory retain skipped: %s", exc)
-        except Exception:  # noqa: BLE001 — retention must not break delivery
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
             logger.exception("[identity-directory] failed to retain Person memory")
 
     def _refresh_config(self) -> DirectoryConfig:
@@ -548,9 +592,6 @@ class IdentityDirectory(Star):
         if snapshot is None:
             yield event.plain_result("无法识别当前账号。")
             return
-        if snapshot.group_id:
-            yield event.plain_result("自我画像可能包含关联账号与长期记忆，仅支持与机器人私聊。")
-            return
 
         resolution = await self.directory_service.resolve_event(event, register=True)
         if resolution is None or resolution.person is None:
@@ -568,11 +609,20 @@ class IdentityDirectory(Star):
         if len(new_persona_text) > _MAX_SELF_PERSONA_CHARS:
             yield event.plain_result(f"自我画像最多 {_MAX_SELF_PERSONA_CHARS} 个字符，请缩短后重试。")
             return
+
+        # Case: 清空模式
+        if new_persona_text.casefold() in {"clear", "reset", "清空", "重置"}:
+            updated_person = await self.directory_service.update_person(target_person.person_id, notes="")
+            if updated_person is None:
+                yield event.plain_result("❌ 清空自我画像失败。")
+                return
+            yield event.plain_result("✨ 自我画像已成功清空！")
+            return
+
         # Case: 写模式（更新/覆盖自我设定）
         if new_persona_text:
             updated_person = await self.directory_service.update_person(
-                target_person.person_id,
-                self_persona=new_persona_text,
+                target_person.person_id, notes=new_persona_text
             )
             if updated_person is None:
                 yield event.plain_result("❌ 更新自我画像失败。")
@@ -613,7 +663,7 @@ class IdentityDirectory(Star):
         # Case: 读模式（查看当前画像）
 
         memories: list[str] = []
-        if config.hindsight_enabled and config.hindsight_recall_enabled:
+        if not snapshot.group_id and config.hindsight_enabled and config.hindsight_recall_enabled:
             try:
                 client = self._person_memory_client()
                 person_ids = await self.directory_service.list_person_identity_ids(target_person.person_id)
@@ -630,7 +680,12 @@ class IdentityDirectory(Star):
                         memories = [recalled_text.strip()]
             except Exception:
                 logger.exception("[identity-directory] self_persona memory recall failed")
-        card_text = render_persona_card(view, is_admin=False, memories=memories)
+        card_text = render_persona_card(
+            view,
+            is_admin=False,
+            include_private_details=not bool(snapshot.group_id),
+            memories=memories,
+        )
         yield event.plain_result(card_text)
 
     # ------------------------------------------------------------- #

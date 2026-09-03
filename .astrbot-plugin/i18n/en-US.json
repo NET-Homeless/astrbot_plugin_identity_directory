@@ -37,11 +37,11 @@
     },
     "inject_identity_context": {
       "description": "Inject current identity",
-      "hint": "Temporarily add the canonical name and current display name to the LLM request. This is not written into session history."
+      "hint": "Temporarily add the canonical name, current display name, and contact portrait to the LLM request. This is not written into session history."
     },
     "allow_self_persona": {
       "description": "Allow self persona",
-      "hint": "Allow members to view or update their own persona only in private chats. A persona may include linked accounts and long-term memories."
+      "hint": "Allow members to view or update their own portrait in private chats or groups. Group queries show only the public portrait content."
     },
     "allow_member_lookup": {
       "description": "Allow member group lookup",

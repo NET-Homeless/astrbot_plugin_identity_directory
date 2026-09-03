@@ -7,7 +7,6 @@
     "types": ["svelte", "vite/client"],
     "allowArbitraryExtensions": true,
     "noEmit": true,
-    "baseUrl": ".",
     "paths": {
       "$lib": ["./src/lib"],
       "$lib/*": ["./src/lib/*"]

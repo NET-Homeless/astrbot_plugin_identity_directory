@@ -29,7 +29,6 @@ class Person:
     is_archived: bool = False
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
-    self_persona: str = ""
 
 
 @dataclass(frozen=True, slots=True)

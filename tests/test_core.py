@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 
 from core.extractor import extract_snapshot
-from core.models import Account, AccountView, Membership, Person, PersonView, SenderSnapshot
-from core.prompt import render_persona_card
+from core.models import Account, AccountView, Membership, Person, PersonView, Resolution, SenderSnapshot
+from core.prompt import build_identity_context, render_persona_card
 from core.service import DirectoryConfig, DirectoryService
 
 
@@ -225,6 +225,43 @@ class CoreServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         account_matches = await svc.list_accounts(query="%")
         assert {account.platform_user_id for account in account_matches} == {"literal%user"}
+        await svc.close()
+
+    async def test_account_views_search_by_canonical_name_and_batch_memberships(self) -> None:
+        svc = _service(self._tmp.name)
+        res = await svc.register_snapshot(
+            SenderSnapshot(
+                platform="aiocqhttp",
+                platform_user_id="qq-user-123",
+                display_name="张三名片",
+                group_id="group-101",
+            )
+        )
+        assert res is not None and res.person is not None
+        await svc.update_person(res.person.person_id, canonical_name="张三")
+
+        # Search by canonical name in account views
+        views, total = await svc.list_account_views(query="张三")
+        assert total == 1
+        assert len(views) == 1
+        assert views[0].account.platform_user_id == "qq-user-123"
+        assert views[0].person_name == "张三"
+        assert len(views[0].memberships) == 1
+        assert views[0].memberships[0].group_id == "group-101"
+        await svc.close()
+
+    async def test_observation_debounced_within_ttl(self) -> None:
+        svc = _service(self._tmp.name)
+        snap = SenderSnapshot(
+            platform="aiocqhttp",
+            platform_user_id="rapid-speaker",
+            display_name="快嘴",
+            group_id="group-1",
+        )
+        # First call schedules task
+        assert svc.schedule_observation(snap) is True
+        # Immediate second call is debounced in-memory
+        assert svc.schedule_observation(snap) is True
         await svc.close()
 
     async def test_bot_skip_when_configured(self) -> None:
@@ -578,13 +615,12 @@ class ExtractorTests(unittest.TestCase):
 
 
 class PersonaRenderTests(unittest.TestCase):
-    def test_render_persona_card_admin_and_member(self) -> None:
+    def test_render_persona_card_uses_notes_as_the_single_portrait(self) -> None:
         person = Person(
             person_id="p-1001",
             canonical_name="测试成员",
-            notes="测试内部备注",
+            notes="喜欢软路由与AI",
             tags=("核心成员", "开发"),
-            self_persona="喜欢软路由与AI",
             created_at=1700000000.0,
             updated_at=1700000000.0,
         )
@@ -604,24 +640,49 @@ class PersonaRenderTests(unittest.TestCase):
             first_seen=1700000000.0,
             last_seen=1700000000.0,
         )
-        acc_view = AccountView(account=acc, memberships=(mem,), alias_count=1)
-        person_view = PersonView(person=person, accounts=(acc_view,))
+        person_view = PersonView(
+            person=person,
+            accounts=(AccountView(account=acc, memberships=(mem,), alias_count=1),),
+        )
 
-        # Admin report includes notes, tags, id
         admin_card = render_persona_card(person_view, is_admin=True, memories=["偏好 Python 3.12"])
         assert "【联系人画像：测试成员】" in admin_card
-        assert "测试内部备注" in admin_card
+        assert "个人设定：喜欢软路由与AI" in admin_card
         assert "rocket_chat:alice_rc" in admin_card
         assert "核心成员, 开发" in admin_card
         assert "偏好 Python 3.12" in admin_card
-        assert "个人设定：喜欢软路由与AI" in admin_card
 
-        # Self-persona report omits internal notes and id
         self_card = render_persona_card(person_view, is_admin=False)
         assert "【自我画像：测试成员】" in self_card
-        assert "测试内部备注" not in self_card
-        assert "rocket_chat:alice_rc" in self_card
         assert "个人设定：喜欢软路由与AI" in self_card
+
+        group_card = render_persona_card(
+            person_view, include_private_details=False, memories=["私密长期记忆"]
+        )
+        assert "个人设定：喜欢软路由与AI" in group_card
+        assert "rocket_chat:alice_rc" not in group_card
+        assert "测试成员名片" not in group_card
+        assert "私密长期记忆" not in group_card
+
+    def test_build_identity_context_uses_contact_portrait(self) -> None:
+        person = Person(person_id="p-1001", canonical_name="测试成员", notes="喜欢软路由与AI")
+        account = Account(
+            account_id="acc-1",
+            platform="rocket_chat",
+            platform_user_id="alice_rc",
+            person_id=person.person_id,
+        )
+        context = build_identity_context(
+            SenderSnapshot(
+                platform="rocket_chat",
+                platform_user_id="alice_rc",
+                display_name="成员名片",
+            ),
+            Resolution(account=account, person=person, membership=None, created=False),
+        )
+
+        assert context is not None
+        assert "user_persona: 喜欢软路由与AI" in context
 
 
 if __name__ == "__main__":

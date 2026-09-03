@@ -27,7 +27,7 @@ from .models import (
     Resolution,
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS persons (
@@ -135,8 +135,8 @@ class DirectoryStore:
             self._migrate_to_v2()
         if current < 3:
             self._migrate_to_v3()
-        if current < 4:
-            self._migrate_to_v4()
+        if current < 5:
+            self._migrate_to_v5()
 
     def _migrate_to_v3(self) -> None:
         """Merge legacy fallback-instance accounts into a real platform instance.
@@ -161,13 +161,16 @@ class DirectoryStore:
                 self._merge_account_rows(str(row["legacy_id"]), str(row["current_id"]))
             self._conn.execute("PRAGMA user_version=3")
 
-    def _migrate_to_v4(self) -> None:
-        """Add self_persona column to persons table."""
+    def _migrate_to_v5(self) -> None:
+        """Fold the legacy self-persona value into notes and remove the duplicate column."""
         with self._transaction():
             columns = {row[1] for row in self._conn.execute("PRAGMA table_info(persons)").fetchall()}
-            if "self_persona" not in columns:
-                self._conn.execute("ALTER TABLE persons ADD COLUMN self_persona TEXT NOT NULL DEFAULT ''")
-            self._conn.execute("PRAGMA user_version=4")
+            if "self_persona" in columns:
+                self._conn.execute(
+                    "UPDATE persons SET notes=self_persona WHERE notes='' AND self_persona<>''"
+                )
+                self._conn.execute("ALTER TABLE persons DROP COLUMN self_persona")
+            self._conn.execute("PRAGMA user_version=5")
 
     def _merge_account_rows(self, source_account_id: str, target_account_id: str) -> None:
         """Move all source relations into target, then delete the source account."""
@@ -402,7 +405,6 @@ class DirectoryStore:
     @staticmethod
     def _person_from(row: sqlite3.Row) -> Person:
         tags = tuple(tag for tag in str(row["tags"] or "").split(",") if tag)
-        self_persona = str(row["self_persona"] or "")
         return Person(
             person_id=row["person_id"],
             canonical_name=row["canonical_name"],
@@ -412,7 +414,6 @@ class DirectoryStore:
             is_archived=bool(row["is_archived"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
-            self_persona=self_persona,
         )
 
     @staticmethod
@@ -486,7 +487,6 @@ class DirectoryStore:
         notes: str = "",
         tags: Iterable[str] = (),
         is_bot: bool = False,
-        self_persona: str = "",
     ) -> Person:
         name = _text(canonical_name, field="canonical_name")
         now = time.time()
@@ -498,11 +498,10 @@ class DirectoryStore:
             is_bot=is_bot,
             created_at=now,
             updated_at=now,
-            self_persona=self_persona,
         )
         self._conn.execute(
             "INSERT INTO persons(person_id, canonical_name, notes, tags, is_bot,"
-            " is_archived, created_at, updated_at, self_persona) VALUES(?,?,?,?,?,0,?,?,?)",
+            " is_archived, created_at, updated_at) VALUES(?,?,?,?,?,0,?,?)",
             (
                 person.person_id,
                 person.canonical_name,
@@ -511,7 +510,6 @@ class DirectoryStore:
                 int(person.is_bot),
                 person.created_at,
                 person.updated_at,
-                person.self_persona,
             ),
         )
         return person
@@ -523,12 +521,9 @@ class DirectoryStore:
         notes: str = "",
         tags: Iterable[str] = (),
         is_bot: bool = False,
-        self_persona: str = "",
     ) -> Person:
         with self._transaction():
-            return self._create_person(
-                canonical_name, notes=notes, tags=tags, is_bot=is_bot, self_persona=self_persona
-            )
+            return self._create_person(canonical_name, notes=notes, tags=tags, is_bot=is_bot)
 
     def update_person(
         self,
@@ -539,7 +534,6 @@ class DirectoryStore:
         tags: Iterable[str] | None = None,
         is_bot: bool | None = None,
         is_archived: bool | None = None,
-        self_persona: str | None = None,
     ) -> Person | None:
         with self._transaction():
             canonical_id = self._resolve_person_id(person_id)
@@ -553,11 +547,10 @@ class DirectoryStore:
             new_tags = tuple(tags) if tags is not None else current.tags
             new_bot = is_bot if is_bot is not None else current.is_bot
             new_archived = is_archived if is_archived is not None else current.is_archived
-            new_persona = self_persona if self_persona is not None else current.self_persona
             now = time.time()
             self._conn.execute(
                 "UPDATE persons SET canonical_name=?, notes=?, tags=?, is_bot=?,"
-                " is_archived=?, updated_at=?, self_persona=? WHERE person_id=?",
+                " is_archived=?, updated_at=? WHERE person_id=?",
                 (
                     _text(new_name, field="canonical_name"),
                     new_notes,
@@ -565,7 +558,6 @@ class DirectoryStore:
                     int(new_bot),
                     int(new_archived),
                     now,
-                    new_persona,
                     canonical_id,
                 ),
             )
@@ -770,6 +762,7 @@ class DirectoryStore:
         platform: str | None,
         platform_instance_id: str | None,
         query: str,
+        include_person_name: bool = False,
     ) -> tuple[str, list[object]]:
         where: list[str] = []
         params: list[object] = []
@@ -788,11 +781,18 @@ class DirectoryStore:
             where.append("accounts.platform_instance_id=?")
             params.append(platform_instance_id)
         if query:
-            where.append(
-                "(accounts.platform_user_id LIKE ? ESCAPE '\\' OR accounts.username LIKE ? ESCAPE '\\')"
-            )
             like = f"%{_escape_like(query)}%"
-            params.extend([like, like])
+            if include_person_name:
+                where.append(
+                    "(accounts.platform_user_id LIKE ? ESCAPE '\\' OR accounts.username LIKE ? ESCAPE '\\'"
+                    " OR (persons.canonical_name IS NOT NULL AND persons.canonical_name LIKE ? ESCAPE '\\'))"
+                )
+                params.extend([like, like, like])
+            else:
+                where.append(
+                    "(accounts.platform_user_id LIKE ? ESCAPE '\\' OR accounts.username LIKE ? ESCAPE '\\')"
+                )
+                params.extend([like, like])
         return (f"WHERE {' AND '.join(where)}" if where else ""), params
 
     def list_accounts(
@@ -835,19 +835,35 @@ class DirectoryStore:
             platform=platform,
             platform_instance_id=platform_instance_id,
             query=query,
+            include_person_name=True,
         )
         from_clause = "accounts LEFT JOIN persons ON persons.person_id = accounts.person_id"
         total = int(self._conn.execute(f"SELECT COUNT(*) FROM {from_clause} {clause}", params).fetchone()[0])
         rows = self._conn.execute(
-            f"SELECT accounts.*, persons.canonical_name AS person_name FROM {from_clause} {clause} "
+            f"SELECT accounts.*, persons.canonical_name AS person_name, "
+            f"(SELECT COUNT(*) FROM aliases WHERE aliases.account_id = accounts.account_id) AS alias_count "
+            f"FROM {from_clause} {clause} "
             "ORDER BY accounts.last_seen DESC, accounts.account_id LIMIT ? OFFSET ?",
             (*params, limit, offset),
         ).fetchall()
+
+        memberships_by_account: dict[str, list[Membership]] = {}
+        if rows:
+            account_ids = [row["account_id"] for row in rows]
+            placeholders = ",".join("?" for _ in account_ids)
+            m_rows = self._conn.execute(
+                f"SELECT * FROM memberships WHERE account_id IN ({placeholders}) ORDER BY last_seen DESC",
+                account_ids,
+            ).fetchall()
+            for m_row in m_rows:
+                m = self._membership_from(m_row)
+                memberships_by_account.setdefault(m.account_id, []).append(m)
+
         views = [
             AccountView(
                 account=self._account_from(row),
-                memberships=tuple(self.list_memberships(row["account_id"])),
-                alias_count=self.count_aliases(row["account_id"]),
+                memberships=tuple(memberships_by_account.get(row["account_id"], ())),
+                alias_count=int(row["alias_count"]),
                 person_name=row["person_name"],
             )
             for row in rows

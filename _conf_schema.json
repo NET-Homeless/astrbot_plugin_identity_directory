@@ -41,13 +41,13 @@
   "inject_identity_context": {
     "description": "注入当前身份",
     "type": "bool",
-    "hint": "在当前 LLM 请求中临时加入规范名和当前显示名，不写入会话历史。",
+    "hint": "在当前 LLM 请求中临时加入规范名、当前显示名和联系人画像，不写入会话历史。",
     "default": true
   },
   "allow_self_persona": {
     "description": "允许自我画像",
     "type": "bool",
-    "hint": "允许成员仅在私聊中查看或更新自己的画像。画像可能包含关联账号与长期记忆。",
+    "hint": "允许成员在私聊或群聊中查看或更新自己的画像。群聊查询仅显示公开画像内容。",
     "default": true
   },
   "allow_member_lookup": {

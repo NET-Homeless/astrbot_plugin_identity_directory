@@ -57,13 +57,17 @@ class DirectoryConfig:
     """Typed view over the plugin configuration."""
 
     def __init__(self, raw: Mapping[str, Any] | None) -> None:
-        self._raw: Mapping[str, Any] = raw if raw is not None else {}
-        self.refresh()
+        self._raw: Mapping[str, Any] = {}
+        self._last_raw_cache: Mapping[str, Any] | None = None
+        self.refresh(raw if raw is not None else {})
 
     def refresh(self, raw: Mapping[str, Any] | None = None) -> None:
         """Refresh the typed values from the live plugin configuration."""
         if raw is not None:
+            if self._last_raw_cache is not None and (raw is self._last_raw_cache or raw == self._raw):
+                return
             self._raw = raw
+            self._last_raw_cache = raw
         raw = self._raw
         self.observe_messages = bool(raw.get("observe_messages", True))
         self.auto_track_display_names = bool(raw.get("auto_track_display_names", True))
@@ -129,6 +133,8 @@ class DirectoryService:
             thread_name_prefix="identity-directory-db",
         )
         self._pending_observations: set[asyncio.Task[None]] = set()
+        self._observation_cache: dict[tuple[str, str, str, str, str], float] = {}
+        self._observation_ttl: float = 60.0
         self._accepting_observations = True
         self._closed = False
         self._binding_tickets: dict[str, BindingTicket] = {}
@@ -160,6 +166,26 @@ class DirectoryService:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return False
+
+        now = time.time()
+        platform = snapshot.platform.strip()
+        instance = snapshot.platform_instance_id.strip() or platform
+        cache_key = (
+            platform.casefold(),
+            instance.casefold(),
+            snapshot.platform_user_id.strip(),
+            snapshot.group_id or "",
+            snapshot.display_name.strip(),
+        )
+        last_time = self._observation_cache.get(cache_key)
+        if last_time is not None and now - last_time < self._observation_ttl:
+            return True
+
+        self._observation_cache[cache_key] = now
+        if len(self._observation_cache) > 5000:
+            threshold = now - (self._observation_ttl * 2)
+            self._observation_cache = {k: v for k, v in self._observation_cache.items() if v > threshold}
+
         task = loop.create_task(self._observe_in_background(snapshot))
         self._pending_observations.add(task)
         task.add_done_callback(self._finish_observation)

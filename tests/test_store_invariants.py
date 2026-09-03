@@ -44,7 +44,7 @@ class StoreMigrationTests(unittest.TestCase):
             assert account.person_id == "person-1"
             assert store.list_memberships("account-1")[0].current_card == "群名片"
             assert store.list_aliases("account-1")[0].name == "群名片"
-            assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 4
+            assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 5
             assert store._conn.execute("PRAGMA foreign_key_check").fetchall() == []
             store.close()
 
@@ -162,24 +162,48 @@ class StoreMigrationTests(unittest.TestCase):
                 "workspace-a",
                 "workspace-b",
             }
-            assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 4
+            assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 5
             assert store._conn.execute("PRAGMA foreign_key_check").fetchall() == []
             store.close()
 
-    def test_v4_self_persona_crud(self) -> None:
+    def test_v4_migrates_legacy_self_persona_into_notes_and_drops_column(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "directory.db"
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                CREATE TABLE persons (
+                    person_id TEXT PRIMARY KEY,
+                    canonical_name TEXT NOT NULL,
+                    notes TEXT NOT NULL DEFAULT '',
+                    tags TEXT NOT NULL DEFAULT '',
+                    is_bot INTEGER NOT NULL DEFAULT 0,
+                    is_archived INTEGER NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    self_persona TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.executemany(
+                "INSERT INTO persons VALUES(?,?,?,?,?,?,?,?,?)",
+                [
+                    ("person-self", "测试用户", "", "", 0, 0, 1.0, 2.0, "全栈开发者"),
+                    ("person-notes", "已有画像", "原画像", "", 0, 0, 1.0, 2.0, "旧副本"),
+                ],
+            )
+            conn.execute("PRAGMA user_version=4")
+            conn.commit()
+            conn.close()
+
             store = DirectoryStore(db_path)
-            p = store.create_person("测试用户", self_persona="全栈开发者")
-            assert p.self_persona == "全栈开发者"
-
-            fetched = store.get_person(p.person_id)
-            assert fetched is not None
-            assert fetched.self_persona == "全栈开发者"
-
-            updated = store.update_person(p.person_id, self_persona="软路由与AI爱好者")
-            assert updated is not None
-            assert updated.self_persona == "软路由与AI爱好者"
+            self_portrait = store.get_person("person-self")
+            existing_portrait = store.get_person("person-notes")
+            assert self_portrait is not None and self_portrait.notes == "全栈开发者"
+            assert existing_portrait is not None and existing_portrait.notes == "原画像"
+            columns = {row[1] for row in store._conn.execute("PRAGMA table_info(persons)")}
+            assert "self_persona" not in columns
+            assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 5
             store.close()
 
 

@@ -106,7 +106,7 @@ class CommandPrivacyTests(unittest.IsolatedAsyncioTestCase):
     async def _responses(generator: AsyncIterator[str]) -> list[str]:
         return [item async for item in generator]
 
-    async def test_sensitive_commands_reject_group_use_except_link(self) -> None:
+    async def test_sensitive_commands_reject_group_use_except_self_portrait_and_link(self) -> None:
         event = _Event(user_id="member", nickname="成员", group_id="group-1")
 
         directory = await self._responses(self.plugin.directory_stats(event))
@@ -116,7 +116,8 @@ class CommandPrivacyTests(unittest.IsolatedAsyncioTestCase):
 
         assert "私聊" in directory[0]
         assert "私聊" in persona[0]
-        assert "私聊" in self_persona[0]
+        assert "已成功更新" in self_persona[0]
+        assert "私聊" not in self_persona[0]
         assert "绑定码已生成" in link[0]
         assert "私聊" not in link[0]
 
@@ -224,6 +225,47 @@ class CommandPrivacyTests(unittest.IsolatedAsyncioTestCase):
         event = _Event(user_id="member", nickname="成员")
         result = await self._responses(self.plugin.self_persona_cmd(event, "x" * 501))
         assert "最多 500 个字符" in result[0]
+
+    async def test_self_persona_write_read_and_clear_updates_notes(self) -> None:
+        event = _Event(user_id="member-persona", nickname="成员画像测试")
+        write_res = await self._responses(self.plugin.self_persona_cmd(event, "喜欢自动化测试与开源"))
+        assert "已成功更新" in write_res[0]
+        assert "喜欢自动化测试与开源" in write_res[0]
+
+        resolution = await self.plugin.directory_service.resolve_sender(
+            "aiocqhttp", "member-persona", platform_instance_id="bot-a"
+        )
+        assert resolution is not None and resolution.person is not None
+        assert resolution.person.notes == "喜欢自动化测试与开源"
+
+        read_res = await self._responses(self.plugin.self_persona_cmd(event, ""))
+        assert "喜欢自动化测试与开源" in read_res[0]
+
+        clear_res = await self._responses(self.plugin.self_persona_cmd(event, "清空"))
+        assert "已成功清空" in clear_res[0]
+
+        cleared = await self.plugin.directory_service.resolve_sender(
+            "aiocqhttp", "member-persona", platform_instance_id="bot-a"
+        )
+        assert cleared is not None and cleared.person is not None
+        assert cleared.person.notes == ""
+
+    async def test_self_persona_group_read_hides_private_details_and_respects_switch(self) -> None:
+        event = _Event(user_id="group-member", nickname="群成员", group_id="group-1")
+        await self._responses(self.plugin.self_persona_cmd(event, "公开画像"))
+
+        read_res = await self._responses(self.plugin.self_persona_cmd(event, ""))
+        assert "公开画像" in read_res[0]
+        assert "aiocqhttp:group-member" not in read_res[0]
+
+        self.plugin.config = {"allow_self_persona": False}
+        disabled_res = await self._responses(self.plugin.self_persona_cmd(event, "新画像"))
+        assert "已被管理员关闭" in disabled_res[0]
+        resolution = await self.plugin.directory_service.resolve_sender(
+            "aiocqhttp", "group-member", "group-1", platform_instance_id="bot-a"
+        )
+        assert resolution is not None and resolution.person is not None
+        assert resolution.person.notes == "公开画像"
 
 
 if __name__ == "__main__":

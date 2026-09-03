@@ -101,7 +101,7 @@
         <Search class="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
         <Input
           type="search"
-          placeholder="搜索账号 ID / 用户名…"
+          placeholder="搜索账号 ID / 用户名 / 规范名…"
           value={directoryState.accountQuery}
           oninput={handleSearchInput}
           class="h-9 pl-9"
