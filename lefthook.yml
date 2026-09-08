@@ -31,7 +31,7 @@ pre-commit:
       run: pyright
     lint-web:
       glob: "web/**/*.{ts,svelte,js}"
-      run: cd web && vp check
+      run: cd web && vp check && pnpm typecheck
 
     # ====== 4. 单元测试 ======
     test-python:

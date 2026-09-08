@@ -154,10 +154,13 @@ class DirectoryStore:
 
         if current < 2:
             self._migrate_to_v2()
+            current = 2
         if current < 3:
             self._migrate_to_v3()
+            current = 3
         if current < 5:
             self._migrate_to_v5()
+            current = 5
 
     def _migrate_to_v3(self) -> None:
         """Merge legacy fallback-instance accounts into a real platform instance.
@@ -633,8 +636,11 @@ class DirectoryStore:
         where = [] if include_archived else ["is_archived=0"]
         params: list[object] = []
         if query:
-            where.append("(canonical_name LIKE ? ESCAPE '\\' OR notes LIKE ? ESCAPE '\\')")
             like = f"%{_escape_like(query)}%"
+            where.append(
+                "(canonical_name LIKE ? COLLATE NOCASE ESCAPE '\\' "
+                "OR notes LIKE ? COLLATE NOCASE ESCAPE '\\')"
+            )
             params.extend([like, like])
         clause = f"WHERE {' AND '.join(where)}" if where else ""
         total = self._conn.execute(f"SELECT COUNT(*) FROM persons {clause}", params).fetchone()[0]

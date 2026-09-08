@@ -115,7 +115,7 @@
               bind:value={newPersonName}
               placeholder="输入新联系人规范名…"
               class="h-9 text-xs flex-1"
-              onkeydown={(e) => {
+              onkeydown={(e: KeyboardEvent) => {
                 if (e.key === "Enter") handleCreateAndLink();
               }}
             />

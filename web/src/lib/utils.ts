@@ -5,6 +5,14 @@ export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs));
 }
 
+export type WithElementRef<T> = T & { ref?: HTMLElement | null };
+
+export type WithoutChild<T> = T extends { child?: unknown } ? Omit<T, "child"> : T;
+
+export type WithoutChildren<T> = T extends { children?: unknown } ? Omit<T, "children"> : T;
+
+export type WithoutChildrenOrChild<T> = WithoutChildren<WithoutChild<T>>;
+
 /**
  * Safely extracts a readable error message from any thrown error value.
  */

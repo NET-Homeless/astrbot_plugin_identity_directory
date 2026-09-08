@@ -67,6 +67,7 @@
   });
 
   function closeDrawer() {
+    if (directoryState.isSaving || directoryState.isDeleting) return;
     directoryState.closePersonDetail();
   }
 
@@ -87,12 +88,18 @@
   }
 
   function handleDelete() {
-    if (!directoryState.activePersonId || !directoryState.activePersonView) return;
+    if (
+      directoryState.isSaving ||
+      directoryState.isDeleting ||
+      !directoryState.activePersonId ||
+      !directoryState.activePersonView
+    )
+      return;
     directoryState.isDeleteOpen = true;
   }
 
   function confirmDelete() {
-    if (!directoryState.activePersonId) return;
+    if (directoryState.isSaving || !directoryState.activePersonId) return;
     directoryState.deletePerson(directoryState.activePersonId);
   }
 
@@ -107,7 +114,7 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape" && directoryState.isDetailOpen) {
+    if (e.key === "Escape" && directoryState.isDetailOpen && !directoryState.isSaving) {
       closeDrawer();
     }
   }
@@ -146,6 +153,7 @@
         variant="ghost"
         size="icon-sm"
         onclick={closeDrawer}
+        disabled={directoryState.isSaving || directoryState.isDeleting}
         class="h-8 w-8 rounded-lg text-muted-foreground hover:text-foreground"
       >
         <X class="h-4 w-4" />
@@ -315,7 +323,7 @@
                 bind:value={newAliasName}
                 placeholder="手动新增别名…"
                 class="h-8 text-xs flex-1"
-                onkeydown={(e) => {
+                onkeydown={(e: KeyboardEvent) => {
                   if (e.key === "Enter") handleAddAlias();
                 }}
               />
@@ -348,7 +356,7 @@
           variant="destructive"
           size="sm"
           onclick={handleDelete}
-          disabled={directoryState.isDeleting}
+          disabled={directoryState.isSaving || directoryState.isDeleting}
           class="h-9 gap-1.5 text-xs"
         >
           <Trash2 class="h-4 w-4" />

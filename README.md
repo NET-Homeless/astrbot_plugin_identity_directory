@@ -31,8 +31,11 @@ cd web
 # 开发调试
 vp dev
 
-# 校验与代码检查
+# 格式与代码风格检查
 vp check
+
+# Svelte 组件深度类型检查 (TS 7)
+pnpm typecheck
 
 # 生产构建（自动输出到 ../pages/directory/）
 vp build
@@ -74,12 +77,11 @@ vp build
 
 1. 在发起账号发送 `/link` 获取 6 位绑定码。
 2. 在目标账号发送 `/link <绑定码>` 提交请求；此时不会修改通讯录。
-3. 回到发起账号发送 `/link confirm <绑定码>`；确认命令会立即合并账号。
+3. 回到发起账号发送 `/link confirm <绑定码>`；只有发起账号有权确认，确认后立即完成账号归并。
 
 绑定码 10 分钟有效、仅可绑定一个目标账号，且连续输错 5 次后会临时限制继续尝试。
 
 ## 其他插件调用
-
 ```python
 plugin = context.get_registered_star("astrbot_plugin_identity_directory")
 if plugin and plugin.star_cls:

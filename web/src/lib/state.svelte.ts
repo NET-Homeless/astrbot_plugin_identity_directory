@@ -259,6 +259,7 @@ class DirectoryState {
   // =========================================================================
 
   async savePerson(personId: string, data: Partial<Person>) {
+    const detailVersion = this.detailRequestVersion;
     await this.runAction(
       () => apiPost(`persons/${personId}/update`, data as Record<string, unknown>),
       {
@@ -266,7 +267,9 @@ class DirectoryState {
         successMsg: "已成功保存修改",
         errorMsg: "保存失败",
         onSuccess: async () => {
-          this.closePersonDetail();
+          if (this.activePersonId === personId && this.detailRequestVersion === detailVersion) {
+            this.closePersonDetail();
+          }
           await Promise.all([this.loadPersons(), this.loadStats()]);
         },
       },

@@ -144,7 +144,36 @@ class PersonMemoryScopeTests(unittest.TestCase):
         )
         assert scope.tags == ("identity:person:person-main", "identity:scope:person")
 
+    def test_document_ids_are_idempotent_but_source_scoped(self) -> None:
+        scope = build_person_memory_scope(
+            SenderSnapshot(platform="aiocqhttp", platform_user_id="user-a", display_name="测试用户"),
+            _resolution(),
+            salt="salt",
+        )
+        assert scope is not None
+        first = build_turn_document_id(
+            scope,
+            source_message_id="same-message-id",
+            content="同一轮消息",
+            source_namespace="aiocqhttp\x00bot-a\x00user-a\x00",
+        )
+        same_source = build_turn_document_id(
+            scope,
+            source_message_id="same-message-id",
+            content="同一轮消息",
+            source_namespace="aiocqhttp\x00bot-a\x00user-a\x00",
+        )
+        other_source = build_turn_document_id(
+            scope,
+            source_message_id="same-message-id",
+            content="同一轮消息",
+            source_namespace="telegram\x00bot-b\x00user-a\x00",
+        )
+        assert first == same_source
+        assert first != other_source
+
     def test_retention_rejects_commands_and_obvious_credentials(self) -> None:
+        assert build_memory_content("Bearer " + "A" * 24, "收到") is None
         assert build_memory_content("/status", "正常运行") is None
         assert build_memory_content("API_KEY=sk-secret-value", "收到") is None
         content = build_memory_content("我今天完成了跨平台身份合并", "我会记住这件事")

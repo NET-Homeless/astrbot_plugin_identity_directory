@@ -42,6 +42,15 @@ class DirectoryConfigTests(unittest.TestCase):
         assert config.allow_self_persona is False
         assert config.allow_member_lookup is True
 
+    def test_refresh_reads_in_place_mapping_changes(self) -> None:
+        raw = {"umo_filter_mode": "blacklist", "umo_filter_list": []}
+        config = DirectoryConfig(raw)
+        raw["umo_filter_mode"] = "whitelist"
+        raw["umo_filter_list"] = ["test:session"]
+        config.refresh(raw)
+        assert config.is_umo_allowed("test:session")
+        assert not config.is_umo_allowed("other:session")
+
 
 class CoreServiceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -382,10 +391,11 @@ class CoreServiceTests(unittest.IsolatedAsyncioTestCase):
         assert "发起账号" in wrong_message
 
         confirmed, confirm_message, target_person = await svc.confirm_binding_ticket(
-            ticket.code, creator_snapshot
+            ticket.code,
+            creator_snapshot,
         )
         assert confirmed is True
-        assert confirm_message == "绑定成功"
+        assert confirm_message.startswith("绑定成功")
         assert target_person is not None and target_person.person_id == creator_person.person_id
 
         view = await svc.get_person_view(creator_person.person_id)
@@ -427,7 +437,10 @@ class CoreServiceTests(unittest.IsolatedAsyncioTestCase):
 
         submitted, _ = await svc.submit_binding_ticket(ticket.code, target_snapshot)
         assert submitted is True
-        confirmed, _, _ = await svc.confirm_binding_ticket(ticket.code, creator_snapshot)
+        confirmed, _, _ = await svc.confirm_binding_ticket(
+            ticket.code,
+            creator_snapshot,
+        )
         assert confirmed is True
         view = await svc.get_person_view(creator_resolution.person.person_id)
         assert view is not None
@@ -454,7 +467,10 @@ class CoreServiceTests(unittest.IsolatedAsyncioTestCase):
             *(svc.submit_binding_ticket(ticket.code, target) for target in targets)
         )
         assert sum(success for success, _ in results) == 1
-        confirmed, _, _ = await svc.confirm_binding_ticket(ticket.code, creator_snapshot)
+        confirmed, _, _ = await svc.confirm_binding_ticket(
+            ticket.code,
+            creator_snapshot,
+        )
         assert confirmed is True
         view = await svc.get_person_view(creator_resolution.person.person_id)
         assert view is not None and len(view.accounts) == 2
@@ -475,7 +491,15 @@ class CoreServiceTests(unittest.IsolatedAsyncioTestCase):
         submitted, _ = await svc.submit_binding_ticket(ticket.code, target)
         assert submitted is True
 
-        results = await asyncio.gather(*(svc.confirm_binding_ticket(ticket.code, creator) for _ in range(2)))
+        results = await asyncio.gather(
+            *(
+                svc.confirm_binding_ticket(
+                    ticket.code,
+                    creator,
+                )
+                for _ in range(2)
+            )
+        )
         assert sum(success for success, _, _ in results) == 1
         view = await svc.get_person_view(creator_resolution.person.person_id)
         assert view is not None and len(view.accounts) == 2

@@ -46,7 +46,8 @@ def collect_release_files() -> list[tuple[Path, str]]:
         "README.md",
         "LICENSE",
         "pyproject.toml",
-        "_manifest.json",
+        "requirements.txt",
+        "_conf_schema.json",
     ]
     for filename in root_files:
         p = ROOT_DIR / filename
@@ -54,7 +55,7 @@ def collect_release_files() -> list[tuple[Path, str]]:
             files.append((p, filename))
 
     # Directories
-    directories = ["core", "pages"]
+    directories = ["core", "pages", ".astrbot-plugin"]
     for dir_name in directories:
         d = ROOT_DIR / dir_name
         if not d.is_dir():

@@ -147,10 +147,12 @@ def build_turn_document_id(
     *,
     source_message_id: str,
     content: str,
+    source_namespace: str = "",
 ) -> str:
-    """Return an idempotent per-turn document ID for Hindsight retain."""
+    """Return an idempotent source-scoped document ID for Hindsight retain."""
     source = source_message_id.strip() or hashlib.sha256(content.encode()).hexdigest()
-    digest = hashlib.sha256("\x00".join((*scope.tags, source)).encode()).hexdigest()[:32]
+    source_key = "\x00".join((source_namespace.strip(), source))
+    digest = hashlib.sha256("\x00".join((*scope.tags, source_key)).encode()).hexdigest()[:32]
     return f"identity-turn-{digest}"
 
 
@@ -383,7 +385,11 @@ def _truncate(value: str, max_chars: int) -> str:
 def _contains_secret(value: str) -> bool:
     return bool(
         re.search(
-            r"(?i)(?:api[_ -]?key|access[_ -]?token|password|passwd|secret|private\s+key|bearer\s+[A-Za-z0-9._-]{12,})\s*[:=]",
+            r"(?i)(?:api[_ -]?key|access[_ -]?token|password|passwd|secret|private\s+key)\s*[:=]\s*\S+",
+            value,
+        )
+        or re.search(
+            r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{12,}",
             value,
         )
     )

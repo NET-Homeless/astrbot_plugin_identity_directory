@@ -58,16 +58,12 @@ class DirectoryConfig:
 
     def __init__(self, raw: Mapping[str, Any] | None) -> None:
         self._raw: Mapping[str, Any] = {}
-        self._last_raw_cache: Mapping[str, Any] | None = None
         self.refresh(raw if raw is not None else {})
 
     def refresh(self, raw: Mapping[str, Any] | None = None) -> None:
         """Refresh the typed values from the live plugin configuration."""
         if raw is not None:
-            if self._last_raw_cache is not None and (raw is self._last_raw_cache or raw == self._raw):
-                return
             self._raw = raw
-            self._last_raw_cache = raw
         raw = self._raw
         self.observe_messages = bool(raw.get("observe_messages", True))
         self.auto_track_display_names = bool(raw.get("auto_track_display_names", True))
@@ -650,14 +646,15 @@ class DirectoryService:
             if pending_target is None:
                 return False, "尚未有另一账号提交绑定请求。", None
             ticket = self._binding_tickets.pop(normalized_code)
-
         target_resolution = await self.register_snapshot(pending_target)
         if target_resolution is None:
             return False, "目标账号注册失败，绑定码已作废，请重新申请。", None
 
         target_person = target_resolution.person
         source_account = target_resolution.account
+        merged_existing_name = ""
         if target_person is not None and target_person.person_id != ticket.person_id:
+            merged_existing_name = target_person.canonical_name
             merged = await self.merge_persons(
                 source_person_id=target_person.person_id,
                 target_person_id=ticket.person_id,
@@ -670,4 +667,10 @@ class DirectoryService:
                 return False, "关联账号至目标联系人失败，绑定码已作废，请重新申请。", None
 
         target_person_obj = await self._run(self._store.get_person, ticket.person_id)
+        if merged_existing_name:
+            return (
+                True,
+                f"绑定成功；目标账号原联系人【{merged_existing_name}】已并入当前联系人",
+                target_person_obj,
+            )
         return True, "绑定成功", target_person_obj

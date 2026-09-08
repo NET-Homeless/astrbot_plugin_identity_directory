@@ -1,7 +1,5 @@
 """astrbot_plugin_identity_directory — 跨平台身份通讯录。"""
 
-from __future__ import annotations
-
 import asyncio
 import inspect
 from datetime import UTC, datetime
@@ -62,7 +60,7 @@ class PassiveIdentityCaptureFilter(CustomFilter):
         service = self._resolve_service()
         if service is None:
             return False
-        service.refresh_config(cfg)
+        service.refresh_config()
         if not service.config.observe_messages:
             return False
         if not service.config.is_umo_allowed(getattr(event, "unified_msg_origin", "")):
@@ -215,6 +213,7 @@ class IdentityDirectory(Star):
                     scope,
                     source_message_id=_event_message_id(event),
                     content=content,
+                    source_namespace=_memory_source_namespace(snapshot),
                 )
                 loop = asyncio.get_running_loop()
                 retain_task = loop.create_task(
@@ -415,8 +414,10 @@ class IdentityDirectory(Star):
             yield event.plain_result("无法识别当前账号。")
             return
 
-        parts = action.strip().upper().split()
-        if not parts or (len(parts) == 1 and parts[0] in {"CODE", "NEW", "申请", "GET"}):
+        raw_action = action.strip()
+        parts = raw_action.split()
+        command = parts[0].casefold() if parts else ""
+        if not parts or (len(parts) == 1 and command in {"code", "new", "申请", "get"}):
             resolution = await self.directory_service.resolve_event(event, register=True)
             if resolution is None or resolution.person is None:
                 yield event.plain_result("无法为当前账号创建联系人主体，请先发送一条普通消息。")
@@ -444,17 +445,19 @@ class IdentityDirectory(Star):
             )
             return
 
-        if len(parts) == 2 and parts[0] == "CONFIRM":
+        if command == "confirm":
+            if len(parts) != 2:
+                yield event.plain_result("用法：/link confirm <绑定码>")
+                return
             success, message, merged_person = await self.directory_service.confirm_binding_ticket(
                 parts[1], snapshot
             )
             if not success:
                 logger.warning(
                     "[identity-directory] binding confirmation rejected: platform=%s, "
-                    "platform_instance=%s, reason=%s",
+                    "platform_instance=%s, reason=confirmation_rejected",
                     snapshot.platform,
                     snapshot.platform_instance_id or snapshot.platform,
-                    message,
                 )
                 yield event.plain_result(f"❌ 无法确认绑定：{message}")
                 return
@@ -481,10 +484,9 @@ class IdentityDirectory(Star):
             else:
                 logger.warning(
                     "[identity-directory] binding target submission rejected: platform=%s, "
-                    "platform_instance=%s, reason=%s",
+                    "platform_instance=%s, reason=target_submission_rejected",
                     snapshot.platform,
                     snapshot.platform_instance_id or snapshot.platform,
-                    message,
                 )
                 yield event.plain_result(f"❌ 绑定失败：{message}")
             return
@@ -753,6 +755,15 @@ def _event_timestamp(event: AstrMessageEvent) -> str | None:
             return None
     text = str(raw).strip()
     return text or None
+
+
+def _memory_source_namespace(snapshot: Any) -> str:
+    """Return the stable source identity that scopes one message ID."""
+    platform = str(getattr(snapshot, "platform", "") or "").strip()
+    instance = str(getattr(snapshot, "platform_instance_id", "") or "").strip() or platform
+    user_id = str(getattr(snapshot, "platform_user_id", "") or "").strip()
+    group_id = str(getattr(snapshot, "group_id", "") or "").strip()
+    return "\x00".join((platform, instance, user_id, group_id))
 
 
 def _temporary_text_part(text: str) -> TextPart:
