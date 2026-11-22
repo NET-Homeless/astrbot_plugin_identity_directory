@@ -12,7 +12,7 @@
     "typecheck": "svelte-check --tsgo-experimental-api --tsconfig ./tsconfig.app.json"
   },
   "devDependencies": {
-    "@playwright/test": "^1.65.0",
+    "@playwright/test": "^1.65.1",
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@tailwindcss/vite": "4.3.5",
     "@tsconfig/svelte": "^5.0.9",
@@ -21,7 +21,7 @@
     "bits-ui": "2.21.0",
     "clsx": "2.1.1",
     "lucide-svelte": "1.0.1",
-    "svelte": "^5.57.3",
+    "svelte": "^5.58.0",
     "svelte-check": "^4.7.8",
     "tailwind-merge": "3.7.0",
     "tailwind-variants": "4.0.2",
